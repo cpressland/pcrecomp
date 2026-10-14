@@ -30,7 +30,10 @@ The guest is 32-bit; the host need not be. On a 32-bit host (Linux `-m32`,
 `RECOMP_FLAT_MEMORY`) a guest address *is* a host address. On a 64-bit host
 (macOS on Apple silicon or Intel, Linux x86-64 or arm64) the guest's 4 GB is
 one mapping at `g_mem_base`, the lift's `ADDR(va)` adds it, and nothing outside
-that mapping has a guest address. The layer is written for both:
+that mapping has a guest address. Built with `RECOMP_MEM_BASE` (a host address,
+`0x100000000000ull` on a Mac) the mapping goes exactly there and `ADDR` adds
+that constant, not a global the compiler reloads after every store. The layer
+is written for all of these:
 
 - `hle_ptr(va)` and `hle_va(p)` convert (guest NULL is host NULL); `APTR`,
   `ASTR` and `RETP` use them. Based, `hle_va` of a pointer outside guest memory
@@ -102,6 +105,7 @@ runtime/win32hle/build_selftests.sh
 builds every `*_selftest.c` with the whole layer and runs it (SDL's dummy
 drivers: no display or sound card needed): on Linux under gcc `-m32` (flat),
 on a Mac 64-bit (based), and `HLE_BASED=1` builds a 64-bit Linux host the
-same way. Prereqs on Debian/Ubuntu: `dpkg --add-architecture i386; apt
+same way; `HLE_MEM_BASE=0x100000000000ull` with either puts the guest's memory
+at that fixed address. Prereqs on Debian/Ubuntu: `dpkg --add-architecture i386; apt
 install gcc-multilib libsdl2-dev:i386 libsdl2-ttf-dev:i386` (`libsdl2-dev
 libsdl2-ttf-dev` for `HLE_BASED=1`); on a Mac, `brew install sdl2 sdl2_ttf`.

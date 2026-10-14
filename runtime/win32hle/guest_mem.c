@@ -95,8 +95,22 @@ static void mem_init_once(void) {
     g_host_page = (size_t)getpagesize();
     /* Nothing is accessible until reserved, page zero included: a guest NULL
      * (or a VA nobody handed out) faults, as it would on Windows. */
+#ifdef RECOMP_MEM_BASE
+    /* The lift adds RECOMP_MEM_BASE as a constant (recomp_types.h): the block
+     * goes there or nowhere. Asked for, not forced, so nothing the host has
+     * mapped is replaced (Linux says so with NOREPLACE; macOS honours a free
+     * hint). */
+    void *want = (void *)(uintptr_t)(RECOMP_MEM_BASE);
+    void *p = mmap(want, SPAN, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+#ifdef __linux__
+                   | MAP_FIXED_NOREPLACE
+#endif
+                   , -1, 0);
+    if (p != want) hle_fatal("cannot reserve the guest's 4 GB at %p (RECOMP_MEM_BASE): the range is in use", want);
+#else
     void *p = mmap(NULL, SPAN, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) hle_fatal("cannot reserve the guest's 4 GB");
+#endif
     g_mem_base = (ptrdiff_t)p;
 }
 void hle_mem_init(void) {

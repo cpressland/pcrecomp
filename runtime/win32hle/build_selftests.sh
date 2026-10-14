@@ -3,7 +3,9 @@
 #
 # On Linux x86 the default is gcc -m32: guest addresses are host addresses
 # (flat). HLE_BASED=1, or any macOS host, builds 64-bit instead, with the
-# guest's 4 GB as one block in the host (based; guest_mem.c). Needs SDL2 and
+# guest's 4 GB as one block in the host (based; guest_mem.c), and
+# HLE_MEM_BASE=0x100000000000ull puts that block at a fixed address (the lift's
+# RECOMP_MEM_BASE). Needs SDL2 and
 # SDL2_ttf for the target (README; on a Mac, Homebrew's sdl2 and sdl2_ttf).
 set -u
 cd "$(dirname "$0")"
@@ -11,7 +13,7 @@ CORE=$(ls *.c | grep -v _selftest.c)
 TMP=${TMPDIR:-/tmp}
 if [ "$(uname -s)" = Darwin ] || [ "${HLE_BASED:-0}" = 1 ]; then
   CC=${CC:-cc}
-  ARCH=
+  ARCH=${HLE_MEM_BASE:+-DRECOMP_MEM_BASE=$HLE_MEM_BASE}
   LIBS=$(pkg-config --cflags --libs sdl2 SDL2_ttf)
   TMP=$TMP/hle-based
   mkdir -p "$TMP"
