@@ -306,6 +306,12 @@ void hle_screen_title(const char *title);
 extern int (*hle_screen_cursor_hook)(void);   /* nonzero: show the cursor the guest set (its Win32 menus); unset: the game draws its own */
 extern void (*hle_screen_frame_hook)(const uint8_t *px, int w, int h, int pitch, int bpp);   /* each shown frame */
 extern int (*hle_screen_compose_hook)(const uint8_t *px16, int pitch, int w, int h, uint32_t *out);   /* a 2x picture */
+/* Preferred over compose_hook when set: the presenter scales the 1x frame and
+ * blends this 2w x 2h ARGB8888 overlay (units' 2x pixels, transparent
+ * elsewhere) over it, so the CPU does not upscale the whole frame. *dx..*dh
+ * get the 2x sub-rect changed since last call. Returns 1 if HD is live. */
+extern int (*hle_screen_overlay_hook)(const uint8_t *px16, int pitch, int w, int h,
+                                      uint32_t *ov, int *dx, int *dy, int *dw, int *dh);
 int  hle_screen_scale(const char *name);   /* sharp, smooth, crt, nearest, integer: 0 if unknown */
 void hle_screen_bars(int blur);            /* the bars beside the picture: a blur of it, or black */
 extern void (*hle_screen_settings_hook)(const char *scale, int bars, int fullscreen);   /* F11/F12 changed them */

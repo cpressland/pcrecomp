@@ -84,6 +84,14 @@ void (*hle_screen_frame_hook)(const uint8_t *px, int w, int h, int pitch, int bp
 int (*hle_screen_compose_hook)(const uint8_t *px16, int pitch, int w, int h, uint32_t *out);
 static uint32_t *g_hd;
 static size_t g_hd_n;
+/* The HD overlay (hle_screen_overlay_hook): a 2x ARGB layer blended over the
+ * scaled 1x picture, so the CPU does not upscale the whole frame. */
+int (*hle_screen_overlay_hook)(const uint8_t *px16, int pitch, int w, int h,
+                               uint32_t *ov, int *dx, int *dy, int *dw, int *dh);
+static uint32_t *g_ov;
+static size_t g_ov_n;
+static SDL_Texture *g_ov_tex;
+static int g_ov_tw, g_ov_th;
 
 static int vk_of(SDL_Scancode s) {
     if (s >= SDL_SCANCODE_A && s <= SDL_SCANCODE_Z) return 'A' + (s - SDL_SCANCODE_A);
@@ -188,8 +196,15 @@ static void present(void) {
     g_shown_seq = seq, g_last_present = now;
     if (hle_screen_frame_hook) hle_screen_frame_hook(px, w, h, pitch, bpp);
     if (!g_ren) return;
-    int hd = 0;
-    if (bpp == 16 && hle_screen_compose_hook) {
+    int hd = 0, ov = 0, ovx = 0, ovy = 0, ovw = 0, ovh = 0;
+    if (bpp == 16 && hle_screen_overlay_hook) {        /* 1x base scaled on the GPU + a 2x overlay */
+        if (g_ov_n < (size_t)w * h * 4) {
+            free(g_ov); g_ov_n = (size_t)w * h * 4; g_ov = (uint32_t *)calloc(g_ov_n, 4);
+            if (g_ov_tex) { SDL_DestroyTexture(g_ov_tex); g_ov_tex = NULL; }
+        }
+        ov = g_ov && hle_screen_overlay_hook(px, pitch, w, h, g_ov, &ovx, &ovy, &ovw, &ovh);
+    }
+    if (!ov && bpp == 16 && hle_screen_compose_hook) { /* the old full 2x compose (other titles) */
         if (g_hd_n < (size_t)w * h * 4) { free(g_hd); g_hd_n = (size_t)w * h * 4; g_hd = (uint32_t *)malloc(g_hd_n * 4); }
         hd = g_hd && hle_screen_compose_hook(px, pitch, w, h, g_hd);
     }
@@ -256,6 +271,23 @@ static void present(void) {
     } else {
         SDL_SetTextureScaleMode(g_tex, g_mode == 1 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
         SDL_RenderCopy(g_ren, g_tex, NULL, &g_dst);
+    }
+    if (ov) {                                            /* the 2x HD overlay, over the scaled 1x picture */
+        if (!g_ov_tex || g_ov_tw != 2 * w || g_ov_th != 2 * h) {
+            if (g_ov_tex) SDL_DestroyTexture(g_ov_tex);
+            g_ov_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 2 * w, 2 * h);
+            g_ov_tw = 2 * w, g_ov_th = 2 * h;
+            if (g_ov_tex) SDL_SetTextureBlendMode(g_ov_tex, SDL_BLENDMODE_BLEND);
+            ovx = 0, ovy = 0, ovw = 2 * w, ovh = 2 * h;  /* a new texture: upload all of it */
+        }
+        if (g_ov_tex && ovw > 0 && ovh > 0) {
+            SDL_Rect ur = { ovx, ovy, ovw, ovh };
+            SDL_UpdateTexture(g_ov_tex, &ur, g_ov + (size_t)ovy * 2 * w + ovx, 2 * w * 4);
+        }
+        if (g_ov_tex) {
+            SDL_SetTextureScaleMode(g_ov_tex, SDL_ScaleModeNearest);
+            SDL_RenderCopy(g_ren, g_ov_tex, NULL, &g_dst);
+        }
     }
     if (g_mode == 2 && g_dst.h >= 2 * h) {                /* crt: the lower third of every game row darker */
         SDL_SetRenderDrawBlendMode(g_ren, SDL_BLENDMODE_BLEND);
