@@ -197,12 +197,12 @@ static void present(void) {
     if (hle_screen_frame_hook) hle_screen_frame_hook(px, w, h, pitch, bpp);
     if (!g_ren) return;
     int hd = 0, ov = 0, ovx = 0, ovy = 0, ovw = 0, ovh = 0;
-    if (bpp == 16 && hle_screen_overlay_hook) {        /* 1x base scaled on the GPU + a 2x overlay */
-        if (g_ov_n < (size_t)w * h * 4) {
-            free(g_ov); g_ov_n = (size_t)w * h * 4; g_ov = (uint32_t *)calloc(g_ov_n, 4);
+    if (bpp == 16 && hle_screen_overlay_hook) {        /* 1x base scaled on the GPU + an Nx overlay */
+        if (g_ov_n < (size_t)w * h * 9) {              /* sized for the largest scale (3x) */
+            free(g_ov); g_ov_n = (size_t)w * h * 9; g_ov = (uint32_t *)calloc(g_ov_n, 4);
             if (g_ov_tex) { SDL_DestroyTexture(g_ov_tex); g_ov_tex = NULL; }
         }
-        ov = g_ov && hle_screen_overlay_hook(px, pitch, w, h, g_ov, &ovx, &ovy, &ovw, &ovh);
+        ov = g_ov ? hle_screen_overlay_hook(px, pitch, w, h, g_ov, &ovx, &ovy, &ovw, &ovh) : 0;
     }
     if (!ov && bpp == 16 && hle_screen_compose_hook) { /* the old full 2x compose (other titles) */
         if (g_hd_n < (size_t)w * h * 4) { free(g_hd); g_hd_n = (size_t)w * h * 4; g_hd = (uint32_t *)malloc(g_hd_n * 4); }
@@ -272,17 +272,18 @@ static void present(void) {
         SDL_SetTextureScaleMode(g_tex, g_mode == 1 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
         SDL_RenderCopy(g_ren, g_tex, NULL, &g_dst);
     }
-    if (ov) {                                            /* the 2x HD overlay, over the scaled 1x picture */
-        if (!g_ov_tex || g_ov_tw != 2 * w || g_ov_th != 2 * h) {
+    if (ov) {                                            /* the Nx HD overlay (ov = N), over the scaled 1x picture */
+        int ow = ov * w, oh = ov * h;
+        if (!g_ov_tex || g_ov_tw != ow || g_ov_th != oh) {
             if (g_ov_tex) SDL_DestroyTexture(g_ov_tex);
-            g_ov_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 2 * w, 2 * h);
-            g_ov_tw = 2 * w, g_ov_th = 2 * h;
+            g_ov_tex = SDL_CreateTexture(g_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, ow, oh);
+            g_ov_tw = ow, g_ov_th = oh;
             if (g_ov_tex) SDL_SetTextureBlendMode(g_ov_tex, SDL_BLENDMODE_BLEND);
-            ovx = 0, ovy = 0, ovw = 2 * w, ovh = 2 * h;  /* a new texture: upload all of it */
+            ovx = 0, ovy = 0, ovw = ow, ovh = oh;        /* a new texture: upload all of it */
         }
         if (g_ov_tex && ovw > 0 && ovh > 0) {
             SDL_Rect ur = { ovx, ovy, ovw, ovh };
-            SDL_UpdateTexture(g_ov_tex, &ur, g_ov + (size_t)ovy * 2 * w + ovx, 2 * w * 4);
+            SDL_UpdateTexture(g_ov_tex, &ur, g_ov + (size_t)ovy * ow + ovx, ow * 4);
         }
         if (g_ov_tex) {
             SDL_SetTextureScaleMode(g_ov_tex, SDL_ScaleModeNearest);
