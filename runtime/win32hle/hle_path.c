@@ -11,6 +11,12 @@
  *   - each component that does not exist as spelled is looked up in its
  *     directory without regard to case.
  *
+ * Lexical '..' traversal in a mapped-drive path stops at that drive's mapped
+ * root. This is not a symlink sandbox: a filesystem symlink below the root
+ * may still resolve outside it. Drive-relative forms such as C:folder are
+ * currently treated as rooted at the mapped drive, not relative to a
+ * per-drive current directory as on Win32.
+ *
  * The reverse (a host directory as the guest should see it) is
  * hle_guest_path, for GetCurrentDirectoryA and GetModuleFileNameA.
  */
@@ -39,13 +45,32 @@ static const char *drive_root(int i) {
     return i == 'z' - 'a' ? "" : NULL;          /* Z: is the host's root */
 }
 
-/* Append one component to out (which holds an existing directory, or ""
- * for the cwd), matching it without case if it is not there as spelled.
- * Returns 1 if the result exists. */
-static int join_component(char *out, size_t n, const char *comp, size_t clen) {
+static int at_or_under(const char *path, const char *root) {
+    size_t len = strlen(root);
+    if (strncmp(path, root, len)) return 0;
+    if (len == 1 && root[0] == '/') return path[0] == '/';
+    return path[len] == '/' || path[len] == 0;
+}
+
+/* Append one component to out. An optional anchor clamps lexical parent
+ * traversal at a mapped root. This does not sandbox symlink targets. */
+static int join_component(char *out, size_t n, const char *anchor, const char *comp, size_t clen) {
     size_t len = strlen(out);
     if (clen == 1 && comp[0] == '.') return 1;
     if (clen == 2 && comp[0] == '.' && comp[1] == '.') {
+        if (anchor) {
+            size_t root_len = strlen(anchor);
+            if (!at_or_under(out, anchor) || len <= root_len) {
+                snprintf(out, n, "%s", anchor);
+                return 1;
+            }
+            char *slash = strrchr(out, '/');
+            if (!slash || (size_t)(slash - out) < root_len) snprintf(out, n, "%s", anchor);
+            else if (slash == out) slash[1] = 0;
+            else *slash = 0;
+            if (!at_or_under(out, anchor)) snprintf(out, n, "%s", anchor);
+            return 1;
+        }
         if (!len || !strcmp(out, ".") ) { snprintf(out, n, ".."); return 1; }
         char *slash = strrchr(out, '/');
         if (slash && strcmp(slash + 1, "..")) { if (slash == out) slash[1] = 0; else *slash = 0; return 1; }
@@ -99,23 +124,55 @@ static void absolute(const char *host, char *out, size_t n) {
 
 static int under(const char *path, const char *dir) {
     size_t l = strlen(dir);
+    if (l == 1 && dir[0] == '/') return path[0] == '/';
     return !strncmp(path, dir, l) && (path[l] == '/' || !path[l]);
 }
 
+/* Lexically canonicalize an absolute POSIX path without resolving symlinks.
+ * This is used for overlay prefix classification, not filesystem isolation. */
+static int normalize_absolute(const char *path, char *out, size_t n) {
+    if (!path || path[0] != '/' || !n) return 0;
+    if (snprintf(out, n, "/") >= (int)n) return 0;
+    const char *p = path;
+    while (*p == '/') p++;
+    while (*p) {
+        const char *e = p;
+        while (*e && *e != '/') e++;
+        size_t len = (size_t)(e - p);
+        if (len == 1 && p[0] == '.') {
+            /* skip */
+        } else if (len == 2 && p[0] == '.' && p[1] == '.') {
+            if (strcmp(out, "/")) {
+                char *slash = strrchr(out, '/');
+                if (!slash || slash == out) snprintf(out, n, "/");
+                else *slash = 0;
+            }
+        } else if (len) {
+            size_t used = strlen(out);
+            int wrote = snprintf(out + used, n - used, "%s%.*s", used > 1 ? "/" : "", (int)len, p);
+            if (wrote < 0 || (size_t)wrote >= n - used) return 0;
+        }
+        p = e;
+        while (*p == '/') p++;
+    }
+    return 1;
+}
+
 int hle_overlay_of(const char *host, char *out, size_t n) {
-    char abs[1024];
+    char abs[1024], normalized[1024];
     out[0] = 0;
     if (!g_overlay) return -1;
     absolute(host, abs, sizeof abs);
-    if (under(abs, g_overlay) || !under(abs, g_overlay_base)) return -1;
+    if (!normalize_absolute(abs, normalized, sizeof normalized) ||
+        under(normalized, g_overlay) || !under(normalized, g_overlay_base)) return -1;
     snprintf(out, n, "%s", g_overlay);
-    const char *p = abs + strlen(g_overlay_base);
+    const char *p = normalized + strlen(g_overlay_base);
     int exists = 1;
     while (*p) {
         while (*p == '/') p++;
         const char *e = p;
         while (*e && *e != '/') e++;
-        if (e > p) exists = join_component(out, n, p, (size_t)(e - p)) && exists;
+        if (e > p) exists = join_component(out, n, g_overlay, p, (size_t)(e - p)) && exists;
         p = e;
     }
     return exists;
@@ -167,28 +224,31 @@ static int host_path_plain(const char *guest, char *out, size_t n) {
     out[0] = 0;
     if (!guest) return 0;
     const char *p = guest;
+    const char *anchor = NULL;
     if (((p[0] | 0x20) >= 'a' && (p[0] | 0x20) <= 'z') && p[1] == ':') {
         const char *root = drive_root((p[0] | 0x20) - 'a');
         if (!root) return 0;
-        snprintf(out, n, "%s", *root ? root : "/");
+        anchor = *root ? root : "/";
+        snprintf(out, n, "%s", anchor);
         p += 2;
         while (*p == '\\' || *p == '/') p++;
     } else if (*p == '\\' || *p == '/') {
         /* rooted without a drive: the C: drive's root, if there is one */
         const char *root = drive_root(2);
-        snprintf(out, n, "%s", root && *root ? root : "/");
+        anchor = root && *root ? root : "/";
+        snprintf(out, n, "%s", anchor);
         while (*p == '\\' || *p == '/') p++;
     }
-    int exists = 1;
     while (*p) {
         const char *e = p;
         while (*e && *e != '\\' && *e != '/') e++;
-        if (e > p) exists = join_component(out, n, p, (size_t)(e - p)) && exists;
+        if (e > p) join_component(out, n, anchor, p, (size_t)(e - p));
         p = e;
         while (*p == '\\' || *p == '/') p++;
     }
     if (!out[0]) snprintf(out, n, ".");
-    return exists;
+    struct stat st;
+    return lstat(out[0] ? out : ".", &st) == 0;
 }
 
 /* A host path (absolute) as the guest sees it: under a mapped drive, that

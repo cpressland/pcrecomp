@@ -54,7 +54,7 @@ is written for all of these:
 | `host_lite.c` | the spine: register file, the machine lock (taken and given back with the registers saved: `hle_block_begin`/`_end`, `hle_yield`; every import and every loop back-edge is a hand-over point when another thread waits), per-thread simulated TIB (`g_fs_base`), dispatch lookups, shim registry, kernel object handles |
 | `host.c` | the full host: `recomp_host_init`/`_boot`/`_run`/`_main` — register the shim modules, map+bind a PE, call its lifted entry |
 | `pe_format.h`, `pe_loader.c` | the 32-bit PE structures; map an image at its base (or a DLL anywhere, relocated), bind its IAT by name or ordinal (`dll#N`) |
-| `hle_path.c` | Windows paths on a POSIX disk: drive letters to host directories, either slash, components matched without case |
+| `hle_path.c` | Windows paths on a POSIX disk: drive letters to host directories, lexical parent traversal clamped at a mapped root, either slash, components matched without case |
 | `module.c` | modules and resources: `LoadLibraryA` (resource DLLs mapped, system DLLs as pseudo-modules), `GetProcAddress`, `FindResourceA`/`LoadResource`/`LoadStringA`, the current directory |
 | `kernel32.c` | process, heap (sized blocks), virtual memory, time, critical sections, events, mutexes, waits, TLS, the console/serial calls a game links |
 | `kernel32_ext.c` | files on descriptors, `FindFirstFileA`, attributes, file times, disks, `.ini` profiles |
@@ -74,6 +74,11 @@ is written for all of these:
 | `advapi32.c` | an in-memory registry (seeded by the host, optionally saved to a file); COMCTL32, VERSION, SHELL32 |
 | `present.c` | the plain SDL2 layer for a GDI game: the gdi32 framebuffer in a window |
 | `*_selftest.c` | synthetic lifted guests driving the spine, the loader, the host, the pump and present, headless, and the GDI and mmio shims called as a guest calls them; `build_selftests.sh` builds and runs them |
+
+Mapped-drive `..` normalization is lexical and does not provide symlink
+containment: a symlink under the mapped root can still resolve outside it.
+Drive-relative forms such as `C:folder` are currently treated as rooted at
+the mapped drive; per-drive current-directory semantics are not implemented.
 
 ## State (what's real, what's next)
 
