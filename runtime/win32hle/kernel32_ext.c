@@ -96,10 +96,11 @@ static int is_device(const char *p, char *host, size_t n) {
     return 0;
 }
 
+int hle_filetrace_on;                                   /* a host's switch (its --filetrace) */
 int hle_filetrace(void) {
     static int on = -1;
     if (on < 0) on = getenv("HLE_FILETRACE") != NULL;
-    return on;
+    return on || hle_filetrace_on;
 }
 
 /* CreateFileA(name,access,share,sa,disp,flags,template). access GENERIC_READ
@@ -142,6 +143,7 @@ static void k_CreateFileA(void) {
     if (hle_filetrace())
         fprintf(stderr, "[file] CreateFileA \"%s\" -> %s %s\n", name, path, fd >= 0 ? "ok" : strerror(errno));
     if (fd < 0) { hle_set_last_error(errno_to_win(errno)); RET(INVALID_HANDLE, 7); }
+    if ((fl & O_CREAT) && !exists) hle_path_changed();
     hle_set_last_error(exists && (disp == 2 || disp == 4) ? ERROR_ALREADY_EXISTS : 0);
     RET(new_file(fd), 7);
 }
@@ -352,20 +354,20 @@ static void k_SetFileAttributesA(void) { char path[1024]; RET(hle_host_path(ASTR
 static void k_CreateDirectoryA(void) {
     char path[1024];
     hle_host_path_for_write(ASTR(0), path, sizeof path, 0);
-    if (mkdir(path, 0755) == 0) RET(1, 2);
+    if (mkdir(path, 0755) == 0) { hle_path_changed(); RET(1, 2); }
     hle_set_last_error(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno_to_win(errno));
     RET(0, 2);
 }
 static void k_RemoveDirectoryA(void) {
     char path[1024];
     hle_host_path(ASTR(0), path, sizeof path);
-    if (rmdir(path) == 0) RET(1, 1);
+    if (rmdir(path) == 0) { hle_path_changed(); RET(1, 1); }
     hle_set_last_error(errno_to_win(errno));
     RET(0, 1);
 }
 static void k_DeleteFileA(void) {
     char path[1024];
-    if (hle_host_path(ASTR(0), path, sizeof path) && unlink(path) == 0) RET(1, 1);
+    if (hle_host_path(ASTR(0), path, sizeof path) && unlink(path) == 0) { hle_path_changed(); RET(1, 1); }
     hle_set_last_error(ERROR_FILE_NOT_FOUND);
     RET(0, 1);
 }
@@ -373,7 +375,7 @@ static void k_MoveFileA(void) {
     char a[1024], b[1024];
     hle_host_path(ASTR(0), a, sizeof a);
     hle_host_path(ASTR(1), b, sizeof b);
-    if (rename(a, b) == 0) RET(1, 2);
+    if (rename(a, b) == 0) { hle_path_changed(); RET(1, 2); }
     hle_set_last_error(errno_to_win(errno));
     RET(0, 2);
 }
@@ -385,6 +387,7 @@ static void k_CopyFileA(void) {                          /* (src, dst, failIfExi
     hle_host_path_for_write(ASTR(1), b, sizeof b, 0);
     if (A32(2) && dst_exists) { hle_set_last_error(ERROR_FILE_EXISTS); RET(0, 3); }
     int in = open(a, O_RDONLY | O_CLOEXEC), out = in >= 0 ? open(b, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644) : -1;
+    if (out >= 0) hle_path_changed();
     if (in >= 0 && out >= 0) {
         char buf[65536];
         ssize_t r;
@@ -571,7 +574,8 @@ static void k_GetDriveTypeA(void) {
 static FILE *ini_open(const char *file, const char *mode) {
     char path[1024];
     if (!file) return NULL;
-    hle_host_path(file, path, sizeof path);
+    if (mode[0] == 'r') hle_host_path(file, path, sizeof path);
+    else { hle_host_path_for_write(file, path, sizeof path, mode[0] == 'a' || strchr(mode, '+') != NULL); hle_path_changed(); }
     return fopen(path, mode);
 }
 static int ini_find_section(FILE *f, const char *section) {
@@ -632,8 +636,11 @@ static void k_WritePrivateProfileStringA(void) {         /* (sec,key,val,file) *
 /* ---- the Win16 _l* file family (an HFILE is our file HANDLE) ---- */
 static uint32_t lopen_common(const char *name, int fl, int create) {
     char path[1024];
-    hle_host_path(name, path, sizeof path);
+    /* a write goes to a mod's overlay, as CreateFileA's does */
+    if (create || fl != O_RDONLY) hle_host_path_for_write(name, path, sizeof path, !create);
+    else hle_host_path(name, path, sizeof path);
     int fd = open(path, fl | O_CLOEXEC | (create ? (O_CREAT | O_TRUNC) : 0), 0644);
+    if (create && fd >= 0) hle_path_changed();
     if (hle_filetrace()) fprintf(stderr, "[file] _lopen \"%s\" -> %s %s\n", name, path, fd >= 0 ? "ok" : strerror(errno));
     if (fd < 0) { hle_set_last_error(errno_to_win(errno)); return INVALID_HANDLE; }
     return new_file(fd);
@@ -754,9 +761,20 @@ static void k_MapViewOfFile(void) {                      /* (hMap, access, offHi
      * it (a pagefile mapping is the reservation's own zeroed pages) */
     uint32_t va = hle_vm_reserve(0, (uint32_t)len);
     if (!va) { hle_set_last_error(8); RET(0, 5); }       /* ERROR_NOT_ENOUGH_MEMORY */
+#ifdef __EMSCRIPTEN__
+    /* no mmap of a file at an address: the view is a copy (writes to it do
+     * not reach the file) */
+    (void)prot;
+    for (size_t done = 0; m->fd >= 0 && done < len;) {
+        ssize_t r = pread(m->fd, (uint8_t *)hle_ptr(va) + done, len - done, (off_t)(off + done));
+        if (r <= 0) break;
+        done += (size_t)r;
+    }
+#else
     if (m->fd >= 0 && mmap(hle_ptr(va), len, prot, MAP_FIXED | (copy ? MAP_PRIVATE : MAP_SHARED), m->fd, (off_t)off) == MAP_FAILED) {
         hle_vm_release(va, (uint32_t)len); hle_set_last_error(8); RET(0, 5);
     }
+#endif
     for (int i = 0; i < MAX_VIEWS; i++) if (!g_views[i].addr) { g_views[i].addr = va, g_views[i].len = (uint32_t)len; break; }
     RET(va, 5);
 }

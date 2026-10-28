@@ -63,15 +63,30 @@ void hle_fatal(const char *fmt, ...) {
  * one's lifted code.) Every import is a yield point when another thread is
  * waiting (shim_entry), as every native call is under native32, and so is
  * every RECOMP_YIELD_EVERY-th loop back-edge (recomp_yield_hook). */
+/* Letting a waiter in: sched_yield gives the CPU up on a real OS; in a
+ * browser's worker it returns at once, so the thread took the lock straight
+ * back and a timer thread never ran (the game then waited forever for a tick
+ * it never got). There, a short sleep instead. */
+#ifdef __EMSCRIPTEN__
+#include <unistd.h>
+#define HLE_SPIN()  usleep(50)
+#define HLE_SPINS   200
+#else
+#define HLE_SPIN()  sched_yield()
+#define HLE_SPINS   1000
+#endif
 static pthread_mutex_t g_mach = PTHREAD_MUTEX_INITIALIZER;
 static volatile int      g_waiters;     /* threads blocked in mach_take */
 static volatile unsigned g_owner_gen;   /* bumped on every take */
 
+extern volatile unsigned hle_dbg_takes;
+int hle_debug_waiters(void) { return g_waiters; }
 static void mach_take(void) {
     __sync_fetch_and_add(&g_waiters, 1);
     pthread_mutex_lock(&g_mach);
     __sync_fetch_and_sub(&g_waiters, 1);
     g_owner_gen++;
+    hle_dbg_takes++;
 }
 
 typedef struct {
@@ -153,18 +168,22 @@ void hle_block_begin(void) {
  * first lets a waiter have its turn. */
 void hle_block_end(void) {
     if (!g_ms.depth) return;
-    for (int spins = 0; g_waiters && g_owner_gen == g_block_gen && spins < 1000; spins++) sched_yield();
+    for (int spins = 0; g_waiters && g_owner_gen == g_block_gen && spins < HLE_SPINS; spins++) HLE_SPIN();
     mach_take();
     regs_load(&g_ms.r);
 }
 
 /* Let a waiting thread have the machine, if there is one. The mutex is not
  * fair, so this waits until someone else has actually taken it. */
+volatile unsigned hle_dbg_yields, hle_dbg_handed, hle_dbg_timeouts, hle_dbg_takes;
 void hle_yield(void) {
     if (!g_waiters || !g_ms.depth) return;
     unsigned gen = g_owner_gen;
+    hle_dbg_yields++;
     hle_block_begin();
-    for (int spins = 0; g_waiters && g_owner_gen == gen && spins < 1000; spins++) sched_yield();
+    int spins = 0;
+    for (; g_waiters && g_owner_gen == gen && spins < HLE_SPINS; spins++) HLE_SPIN();
+    if (g_owner_gen != gen) hle_dbg_handed++; else if (spins >= HLE_SPINS) hle_dbg_timeouts++;
     hle_block_end();
 }
 

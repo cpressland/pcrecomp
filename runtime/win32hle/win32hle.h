@@ -217,6 +217,7 @@ int  hle_overlay_of(const char *host, char *out, size_t n);       /* -1: not und
 int  hle_host_path_for_write(const char *guest, char *out, size_t n, int keep);
 int  hle_host_path_base(const char *guest, char *out, size_t n);  /* ignoring the overlay */
 void hle_guest_path(const char *host, char *out, size_t n);
+void hle_path_changed(void);          /* a file was made, removed or renamed: the kept directory listings go */
 
 /* ---- host services a shim may need (kernel32.c) ---- */
 void  hle_set_last_error(uint32_t code);           /* what GetLastError answers next */

@@ -37,6 +37,66 @@
 #ifdef HLE_FLAT
 /* ================================================================ flat */
 
+#ifdef __EMSCRIPTEN__
+/* WebAssembly: one linear memory, and a guest VA is an address in it. There
+ * is no mmap at a fixed address and no protection, so a fixed reservation
+ * (the PE image at its base) is simply a range below HLE_FIXED_END, where
+ * the toolchain puts nothing (the program is linked with GLOBAL_BASE there;
+ * everything of its own, data, stack and heap, is above), tracked here so
+ * two cannot overlap; a reservation anywhere is a 64 KB-aligned block from
+ * malloc. Both are zeroed. */
+#ifndef HLE_FIXED_END
+#define HLE_FIXED_END 0x01000000u
+#endif
+#define WASM_GRAN 0x10000u
+#define WASM_MAX_RES 1024
+static pthread_mutex_t g_res_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint32_t lo, hi; int fixed; } g_res[WASM_MAX_RES];
+static int g_nres;
+
+void hle_mem_init(void) {}
+
+uint32_t hle_vm_reserve(uint32_t va, uint32_t size) {
+    if (!size) return 0;
+    uint32_t r = 0;
+    pthread_mutex_lock(&g_res_lock);
+    if (g_nres >= WASM_MAX_RES) { pthread_mutex_unlock(&g_res_lock); return 0; }
+    if (va) {
+        uint64_t lo = va & ~(uint64_t)(WASM_GRAN - 1), hi = ((uint64_t)va + size + WASM_GRAN - 1) & ~(uint64_t)(WASM_GRAN - 1);
+        int ok = lo >= WASM_GRAN && hi <= HLE_FIXED_END;
+        for (int i = 0; ok && i < g_nres; i++) if (lo < g_res[i].hi && hi > g_res[i].lo) ok = 0;
+        if (ok) {
+            memset((void *)(uintptr_t)lo, 0, (size_t)(hi - lo));
+            g_res[g_nres].lo = (uint32_t)lo, g_res[g_nres].hi = (uint32_t)hi, g_res[g_nres].fixed = 1, g_nres++;
+            r = (uint32_t)lo;
+        }
+    } else {
+        size_t n = ((size_t)size + WASM_GRAN - 1) & ~(size_t)(WASM_GRAN - 1);
+        void *p = NULL;
+        if (posix_memalign(&p, WASM_GRAN, n) == 0 && p) {
+            memset(p, 0, n);
+            g_res[g_nres].lo = (uint32_t)(uintptr_t)p, g_res[g_nres].hi = (uint32_t)((uintptr_t)p + n), g_res[g_nres].fixed = 0, g_nres++;
+            r = (uint32_t)(uintptr_t)p;
+        }
+    }
+    pthread_mutex_unlock(&g_res_lock);
+    return r;
+}
+void hle_vm_release(uint32_t va, uint32_t size) {
+    (void)size;
+    pthread_mutex_lock(&g_res_lock);
+    for (int i = 0; i < g_nres; i++) {
+        if (g_res[i].lo != va) continue;
+        if (g_res[i].fixed) memset((void *)(uintptr_t)va, 0, g_res[i].hi - g_res[i].lo);
+        else free((void *)(uintptr_t)va);
+        g_res[i] = g_res[--g_nres];
+        break;
+    }
+    pthread_mutex_unlock(&g_res_lock);
+}
+void hle_vm_zero(uint32_t va, uint32_t size) { memset((void *)(uintptr_t)va, 0, size); }
+
+#else
 void hle_mem_init(void) {}
 
 uint32_t hle_vm_reserve(uint32_t va, uint32_t size) {
@@ -48,6 +108,7 @@ uint32_t hle_vm_reserve(uint32_t va, uint32_t size) {
 }
 void hle_vm_release(uint32_t va, uint32_t size) { munmap((void *)(uintptr_t)va, size); }
 void hle_vm_zero(uint32_t va, uint32_t size)    { madvise((void *)(uintptr_t)va, size, MADV_DONTNEED); }
+#endif /* !__EMSCRIPTEN__ */
 
 void *hle_heap_alloc(uint32_t n, int zero) {
     uint8_t *p = (uint8_t *)(zero ? calloc(1, (size_t)n + HDR) : malloc((size_t)n + HDR));

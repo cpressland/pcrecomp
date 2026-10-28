@@ -43,16 +43,263 @@ static void k_DDSurfaceType(void) {
     RET(bpp == 16 ? 10u /* 565 */ : bpp == 32 ? 3u /* 32 */ : bpp == 24 ? 1u : 0u, 1);
 }
 
-#ifndef HLE_WITH_FFMPEG
-static void k_Open(void) { g_error = "no movie decoder on this host"; RET(0, 2); }
-static void k_ret0_1(void) { RET(0, 1); }
-static void k_ret0_2(void) { RET(0, 2); }
-static void k_ret0_3(void) { RET(0, 3); }
-static void k_ret0_7(void) { RET(0, 7); }
+#ifdef __EMSCRIPTEN__
+/* In a browser the page plays the movie (web/movies.js: transcoded once by
+ * ffmpeg.wasm, then a <video>), and copies each frame, as RGBA, into a
+ * buffer here, with a state block the page writes: ready (1; 2 failed),
+ * the newest frame's number, ended, the preparation's progress (per mille),
+ * then the size and the buffer. BinkOpen hands the page the movie's bytes
+ * and waits for it to be ready; the frame calls read the block. The sound
+ * is the video's own, not the mixer's. */
+#include <emscripten.h>
+typedef struct { volatile uint32_t ready, frame, ended, progress, w, h; uint32_t rgba; } web_movie_t;
+typedef struct {
+    uint32_t Width, Height, Frames, FrameNum, LastFrameNum, FrameRate, FrameRateDiv, ReadError, OpenFlags, BinkType,
+             Size, FrameSize, SndSize;
+    uint32_t pad[64];
+    web_movie_t *st;
+    int id;
+    uint32_t shown;                                        /* the frame BinkDoFrame last took */
+    int paused;
+    int wrapped;                                           /* past the last frame: FrameNum went back to 1 */
+} bink_t;
+static int g_movie_ids;
+static void web_movie_ctl(int id, int what, int value) {
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module['ra2MovieCtl']) Module['ra2MovieCtl']($0, $1, $2); }, id, what, value);
+}
+static void k_Open(void) {                               /* (name or handle, flags) */
+    uint32_t flags = A32(1);
+    uint8_t hdr[44];
+    int fd, own = 0;
+    off_t base = 0;
+    if (flags & BINKFILEHANDLE) { fd = hle_file_fd(A32(0)); if (fd >= 0) base = lseek(fd, 0, SEEK_CUR); }
+    else {
+        char path[1024];
+        hle_host_path(ASTR(0), path, sizeof path);
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+        own = 1;
+    }
+    if (fd < 0) { g_error = "cannot open the movie"; RET(0, 2); }
+    if (pread(fd, hdr, sizeof hdr, base) < (ssize_t)sizeof hdr || memcmp(hdr, "BIK", 3) != 0) {
+        if (own) close(fd);
+        g_error = "not a Bink movie";
+        RET(0, 2);
+    }
+    bink_t *b = (bink_t *)hle_alloc(sizeof *b);
+    memcpy(&b->Size, hdr + 4, 4);
+    memcpy(&b->Frames, hdr + 8, 4);
+    memcpy(&b->FrameSize, hdr + 12, 4);
+    memcpy(&b->Width, hdr + 20, 4);
+    memcpy(&b->Height, hdr + 24, 4);
+    memcpy(&b->FrameRate, hdr + 28, 4);
+    memcpy(&b->FrameRateDiv, hdr + 32, 4);
+    if (!b->FrameRate) b->FrameRate = 15;
+    if (!b->FrameRateDiv) b->FrameRateDiv = 1;
+    b->FrameNum = 1, b->OpenFlags = flags, b->id = ++g_movie_ids;
+    /* the whole movie, for the page */
+    size_t len = (size_t)b->Size + 8;
+    uint8_t *buf = len < (256u << 20) ? (uint8_t *)malloc(len) : NULL;
+    size_t got = 0;
+    while (buf && got < len) {
+        ssize_t r = pread(fd, buf + got, len - got, base + (off_t)got);
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    if (own) close(fd);
+    if (buf && got == len && b->Width && b->Height) {
+        web_movie_t *st = (web_movie_t *)calloc(1, sizeof *st);
+        st->w = b->Width, st->h = b->Height;
+        st->rgba = (uint32_t)(uintptr_t)calloc((size_t)b->Width * b->Height, 4);
+        b->st = st;
+        MAIN_THREAD_EM_ASM({ if (Module['ra2MovieOpen']) Module['ra2MovieOpen']($0, $1, $2, $3, $4, $5, $6, $7); else HEAPU32[$3 >> 2] = 2; },
+                           b->id, buf, (int)len, st, (int)b->Width, (int)b->Height, (double)b->FrameRate / b->FrameRateDiv, (int)b->Frames);
+        free(buf);
+        uint32_t t0 = hle_ticks_ms(), said = 0;
+        while (st->ready == 0 && hle_ticks_ms() - t0 < 30u * 60u * 1000u) {
+            hle_block_begin(); usleep(50000); hle_block_end();
+            if (hle_ticks_ms() - t0 > said + 3000) { said = hle_ticks_ms() - t0; fprintf(stderr, "[bink] preparing the movie: %u%%\n", st->progress / 10); }
+        }
+        if (st->ready != 1) {
+            fprintf(stderr, "[bink] the page could not play the movie: skipped\n");
+            free((void *)(uintptr_t)st->rgba);
+            free(st);
+            b->st = NULL;
+        }
+    } else {
+        free(buf);
+        fprintf(stderr, "[bink] cannot read the movie (%u bytes): skipped\n", (unsigned)len);
+    }
+    RET(hle_va(b), 2);
+}
+static void k_Close(void) {
+    bink_t *b = (bink_t *)APTR(0);
+    if (!b) RETV(1);
+    if (b->st) { web_movie_ctl(b->id, 4, 0); free((void *)(uintptr_t)b->st->rgba); free(b->st); }
+    hle_free(b);
+    RETV(1);
+}
+static void k_DoFrame(void) {
+    bink_t *b = (bink_t *)APTR(0);
+    if (b) { if (b->st) b->shown = b->st->frame; b->LastFrameNum = b->FrameNum; }
+    RET(0, 1);
+}
+/* As Bink does: past the last frame, FrameNum goes back to 1, and BinkWait
+ * then waits (the game saw the last frame's number and ends or loops the
+ * movie with BinkGoto). A game's loop is "do frame; copy; next; while
+ * (!BinkWait)": it leaves only when BinkWait says wait. */
+static void k_NextFrame(void) {
+    bink_t *b = (bink_t *)APTR(0);
+    if (b) {
+        if (b->FrameNum >= b->Frames) { b->FrameNum = 1; b->wrapped = 1; }
+        else {
+            uint32_t f = b->st ? (b->st->ended ? b->Frames : b->st->frame + 1) : b->FrameNum + 1;
+            if (f > b->Frames) f = b->Frames;
+            if (f <= b->FrameNum) f = b->FrameNum + 1;
+            b->FrameNum = f;
+        }
+    }
+    RETV(1);
+}
+static void k_Wait(void) {                               /* nonzero while the next frame is not there yet */
+    bink_t *b = (bink_t *)APTR(0);
+    if (!b || !b->st) RET(0, 1);
+    if (b->paused || b->wrapped) RET(1, 1);
+    RET(b->st->frame == b->shown && !b->st->ended ? 1u : 0u, 1);
+}
+static void k_Pause(void) {                              /* (bink, pause) -> the state */
+    bink_t *b = (bink_t *)APTR(0);
+    int p = A32(1) != 0;
+    if (!b) RET(0, 2);
+    if (p != b->paused && b->st) web_movie_ctl(b->id, 1, p);
+    b->paused = p;
+    RET((uint32_t)p, 2);
+}
+static void k_SetVolume(void) {                          /* (bink, volume) 32768 is full */
+    bink_t *b = (bink_t *)APTR(0);
+    if (b && b->st) {
+        int v = (int)((int32_t)A32(1) * 1000 / 32768);
+        web_movie_ctl(b->id, 2, v < 0 ? 0 : v > 1000 ? 1000 : v);
+    }
+    RET(0, 2);
+}
+static void k_Goto(void) {                               /* (bink, frame, flags) */
+    bink_t *b = (bink_t *)APTR(0);
+    if (b) {
+        uint32_t to = A32(1) && A32(1) <= b->Frames ? A32(1) : 1;
+        b->FrameNum = to, b->shown = 0, b->wrapped = 0;
+        if (b->st) { b->st->ended = 0; web_movie_ctl(b->id, 3, (int)to); }
+    }
+    RETV(3);
+}
+/* BinkCopyToBuffer(bink, dest, pitch, height, x, y, flags): the newest frame
+ * into a buffer of the type flags' low bits name (565, 555, 32-bit). */
+static void k_CopyToBuffer(void) {
+    bink_t *b = (bink_t *)APTR(0);
+    uint8_t *dst = (uint8_t *)APTR(1);
+    int pitch = (int)A32(2), dh = (int)A32(3), dx = (int)A32(4), dy = (int)A32(5), type = (int)(A32(6) & 0xF);
+    if (!b || !b->st || !b->st->frame || !dst) RET(0, 7);
+    const uint8_t *src = (const uint8_t *)(uintptr_t)b->st->rgba;
+    int w = (int)b->Width, h = (int)b->Height;
+    for (int y = 0; y < h && dy + y < dh; y++) {
+        const uint8_t *p = src + (size_t)y * w * 4;
+        uint8_t *row = dst + (size_t)(dy + y) * (size_t)pitch;
+        for (int x = 0; x < w; x++, p += 4) {
+            int X = dx + x, r = p[0], g = p[1], bb = p[2];
+            if (type == 10) ((uint16_t *)row)[X] = (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | bb >> 3);
+            else if (type == 9) ((uint16_t *)row)[X] = (uint16_t)((r >> 3) << 10 | (g >> 3) << 5 | bb >> 3);
+            else if (type == 3 || type == 5) ((uint32_t *)row)[X] = 0xFF000000u | (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)bb;
+            else if (type == 1) row[3 * X] = (uint8_t)bb, row[3 * X + 1] = (uint8_t)g, row[3 * X + 2] = (uint8_t)r;
+        }
+    }
+    RET(0, 7);
+}
 const win32hle_shim win32hle_bink[] = {
-    { "_BinkOpen@8", k_Open }, { "_BinkClose@4", k_ret0_1 }, { "_BinkDoFrame@4", k_ret0_1 },
-    { "_BinkNextFrame@4", k_ret0_1 }, { "_BinkWait@4", k_ret0_1 }, { "_BinkCopyToBuffer@28", k_ret0_7 },
-    { "_BinkGoto@12", k_ret0_3 }, { "_BinkPause@8", k_ret0_2 }, { "_BinkSetVolume@8", k_ret0_2 },
+    { "_BinkOpen@8", k_Open }, { "_BinkClose@4", k_Close }, { "_BinkDoFrame@4", k_DoFrame },
+    { "_BinkNextFrame@4", k_NextFrame }, { "_BinkWait@4", k_Wait }, { "_BinkCopyToBuffer@28", k_CopyToBuffer },
+    { "_BinkGoto@12", k_Goto }, { "_BinkPause@8", k_Pause }, { "_BinkSetVolume@8", k_SetVolume },
+    { "_BinkGetError@0", k_GetError }, { "_BinkSetSoundSystem@8", k_SetSoundSystem },
+    { "_BinkOpenDirectSound@4", k_OpenDirectSound }, { "_BinkDDSurfaceType@4", k_DDSurfaceType },
+    { 0, 0 } };
+#elif !defined(HLE_WITH_FFMPEG)
+/* No decoder: the movie "plays" without a picture. BinkOpen reads the
+ * .bik's header (its size, frame count and rate), so the game gets a
+ * plausible BINK and paces itself by it, and the movie ends after two
+ * frames: a failed BinkOpen is not something the game copes with (Yuri's
+ * Revenge dereferences the handle it did not get), and a black intro that
+ * lasts its full length would be a wait for nothing. */
+typedef struct {
+    uint32_t Width, Height, Frames, FrameNum, LastFrameNum, FrameRate, FrameRateDiv, ReadError, OpenFlags, BinkType,
+             Size, FrameSize, SndSize;
+    uint32_t pad[64];
+    uint32_t start_ms, paused_at;
+    int paused;
+} bink_t;
+static void k_Open(void) {                               /* (name or handle, flags) */
+    uint32_t flags = A32(1);
+    uint8_t hdr[44];
+    int fd, own = 0;
+    if (flags & BINKFILEHANDLE) fd = hle_file_fd(A32(0));
+    else {
+        char path[1024];
+        hle_host_path(ASTR(0), path, sizeof path);
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+        own = 1;
+    }
+    if (fd < 0) { g_error = "cannot open the movie"; RET(0, 2); }
+    ssize_t n = read(fd, hdr, sizeof hdr);
+    if (own) close(fd);
+    if (n < (ssize_t)sizeof hdr || memcmp(hdr, "BIK", 3) != 0) { g_error = "not a Bink movie"; RET(0, 2); }
+    bink_t *b = (bink_t *)hle_alloc(sizeof *b);
+    memcpy(&b->Size, hdr + 4, 4);
+    memcpy(&b->Frames, hdr + 8, 4);
+    memcpy(&b->FrameSize, hdr + 12, 4);
+    memcpy(&b->Width, hdr + 20, 4);
+    memcpy(&b->Height, hdr + 24, 4);
+    memcpy(&b->FrameRate, hdr + 28, 4);
+    memcpy(&b->FrameRateDiv, hdr + 32, 4);
+    if (!b->FrameRate) b->FrameRate = 15;
+    if (!b->FrameRateDiv) b->FrameRateDiv = 1;
+    (void)0; /* b->Frames as the file says */
+    b->FrameNum = 1, b->OpenFlags = flags, b->start_ms = hle_ticks_ms();
+    static int said;
+    if (!said++) fprintf(stderr, "[bink] no movie decoder on this host: movies are skipped\n");
+    RET(hle_va(b), 2);
+}
+static void k_Close(void) { if (A32(0)) hle_free(APTR(0)); RETV(1); }
+static void k_DoFrame(void) { bink_t *b = (bink_t *)APTR(0); if (b) b->LastFrameNum = b->FrameNum; RET(0, 1); }
+static void k_NextFrame(void) { bink_t *b = (bink_t *)APTR(0); if (b && b->FrameNum < b->Frames) b->FrameNum++; RETV(1); }
+static void k_Wait(void) {                               /* nonzero while the next frame is not due */
+    bink_t *b = (bink_t *)APTR(0);
+    if (!b) RET(0, 1);
+    if (b->paused) RET(1, 1);
+    uint64_t due = (uint64_t)(b->FrameNum - 1) * 1000u * b->FrameRateDiv / b->FrameRate;
+    RET(hle_ticks_ms() - b->start_ms < due ? 1u : 0u, 1);
+}
+static void k_Pause(void) {                              /* (bink, pause) -> the state */
+    bink_t *b = (bink_t *)APTR(0);
+    int p = A32(1) != 0;
+    if (!b) RET(0, 2);
+    if (p && !b->paused) b->paused_at = hle_ticks_ms();
+    if (!p && b->paused) b->start_ms += hle_ticks_ms() - b->paused_at;
+    b->paused = p;
+    RET((uint32_t)p, 2);
+}
+static void k_Goto(void) {                               /* (bink, frame, flags) */
+    bink_t *b = (bink_t *)APTR(0);
+    if (b) {
+        b->FrameNum = A32(1) && A32(1) <= b->Frames ? A32(1) : 1;
+        b->start_ms = hle_ticks_ms() - (uint32_t)((uint64_t)(b->FrameNum - 1) * 1000u * b->FrameRateDiv / b->FrameRate);
+    }
+    RETV(3);
+}
+/* BinkCopyToBuffer: nothing to draw, so the buffer keeps what it had (the
+ * menu's loading picture stays where its movie would play). */
+static void k_CopyToBuffer(void) { RET(0, 7); }
+static void k_SetVolume(void) { RET(0, 2); }
+const win32hle_shim win32hle_bink[] = {
+    { "_BinkOpen@8", k_Open }, { "_BinkClose@4", k_Close }, { "_BinkDoFrame@4", k_DoFrame },
+    { "_BinkNextFrame@4", k_NextFrame }, { "_BinkWait@4", k_Wait }, { "_BinkCopyToBuffer@28", k_CopyToBuffer },
+    { "_BinkGoto@12", k_Goto }, { "_BinkPause@8", k_Pause }, { "_BinkSetVolume@8", k_SetVolume },
     { "_BinkGetError@0", k_GetError }, { "_BinkSetSoundSystem@8", k_SetSoundSystem },
     { "_BinkOpenDirectSound@4", k_OpenDirectSound }, { "_BinkDDSurfaceType@4", k_DDSurfaceType },
     { 0, 0 } };
