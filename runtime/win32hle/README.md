@@ -9,6 +9,15 @@ which already hosts recomp32 code on a non-Windows libsys HLE.
 This is the portable path the OS-agnostic effort is built on; see
 `../../../LINUX_PORT_PLAN.md` (out of tree).
 
+## Disk free space limitations
+
+`GetDiskFreeSpaceExA` reports host `statvfs` values for a mapped guest directory.
+It handles 64-bit byte counts and NULL output pointers, but does not model
+Windows per-user quotas, CD-specific behavior, UNC paths, or Windows ACLs.
+UNC paths are rejected with `ERROR_CALL_NOT_IMPLEMENTED`. Host filesystem errors
+are mapped to the available Windows error codes on a best-effort basis. The
+host does not yet model invalid guest pointer exceptions.
+
 ## Why it needs no inline asm
 
 It reuses native32's **shim ABI**, which runs entirely inside the lifted model:

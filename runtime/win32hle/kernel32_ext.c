@@ -547,6 +547,50 @@ static void k_GetDiskFreeSpaceA(void) {                  /* (root, &spc, &bps, &
     if (A32(4)) MEM32(A32(4)) = 0xFFFFFu;
     RET(1, 5);
 }
+/* Checked before any guest output is written: Windows reports byte counts. */
+static int disk_mul_u64(uint64_t a, uint64_t b, uint64_t *out) {
+    if (a && b > UINT64_MAX / a) return 0;
+    *out = a * b; return 1;
+}
+
+static void k_GetDiskFreeSpaceExA(void) {
+    const char *guest = ASTR(0);
+    uint32_t outputs[3] = { A32(1), A32(2), A32(3) };
+    char current[1024], guest_current[1024], root[4], host[1024];
+    for (int i = 0; i < 3; ++i)
+        if (outputs[i] && outputs[i] > UINT32_MAX - 7u) {
+            hle_set_last_error(87u); RET(0, 4);
+        }
+    if (!guest) {
+        if (!getcwd(current, sizeof current)) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
+        hle_guest_path(current, guest_current, sizeof guest_current);
+        if (!guest_current[0] || guest_current[1] != ':') { hle_set_last_error(120u); RET(0, 4); }
+        root[0] = guest_current[0]; root[1] = ':'; root[2] = '\\'; root[3] = 0; guest = root;
+    }
+    if ((guest[0] == '\\' || guest[0] == '/') &&
+        (guest[1] == '\\' || guest[1] == '/')) {
+        hle_set_last_error(120u); RET(0, 4); /* UNC not supported */
+    }
+    host[0] = 0;
+    if (!hle_host_path_base(guest, host, sizeof host)) {
+        hle_set_last_error(ERROR_PATH_NOT_FOUND); RET(0, 4);
+    }
+    struct stat st;
+    if (stat(host, &st) != 0) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
+    if (!S_ISDIR(st.st_mode)) { hle_set_last_error(267u); RET(0, 4); }
+    struct statvfs info;
+    if (statvfs(host, &info) != 0) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
+    uint64_t unit = info.f_frsize ? info.f_frsize : info.f_bsize;
+    uint64_t values[3];
+    if (!unit || !disk_mul_u64(unit, info.f_bavail, &values[0]) ||
+        !disk_mul_u64(unit, info.f_blocks, &values[1]) ||
+        !disk_mul_u64(unit, info.f_bfree, &values[2])) {
+        hle_set_last_error(534u); RET(0, 4);
+    }
+    for (int i = 0; i < 3; ++i) if (outputs[i]) memcpy(hle_ptr(outputs[i]), &values[i], 8);
+    RET(1, 4);
+}
+
 static void k_GetVolumeInformationA(void) {              /* (root, name, nameN, &serial, &maxComp, &flags, fs, fsN) */
     char *name = ASTR(1), *fs = ASTR(6);
     if (name && A32(2)) snprintf(name, A32(2), "%s", "HLE");
@@ -814,6 +858,7 @@ const win32hle_shim win32hle_kernel32_ext[] = {
     { "FindNextFileA",              k_FindNextFileA },
     { "FindClose",                  k_FindClose },
     { "GetDiskFreeSpaceA",          k_GetDiskFreeSpaceA },
+    { "GetDiskFreeSpaceExA",        k_GetDiskFreeSpaceExA },
     { "GetVolumeInformationA",      k_GetVolumeInformationA },
     { "GetDriveTypeA",              k_GetDriveTypeA },
     { "GetSystemTime",              k_GetSystemTime },
