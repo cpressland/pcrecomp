@@ -41,8 +41,8 @@ int main(void) {
     }
 
     char mapped[1024], expected[1024], path[1024], overlay_path[1024];
-    char canonical_game[1024], canonical_mod[1024];
-    if (!realpath(game, canonical_game) || !realpath(mod, canonical_mod)) return 2;
+    char *canonical_game = realpath(game, NULL), *canonical_mod = realpath(mod, NULL);
+    if (!canonical_game || !canonical_mod) { free(canonical_game); free(canonical_mod); return 2; }
     snprintf(expected, sizeof expected, "%s/file.txt", canonical_game);
     snprintf(mod_file, sizeof mod_file, "%s/file.txt", canonical_mod);
     hle_set_drive('C', game);
@@ -92,6 +92,7 @@ int main(void) {
     hle_set_drive('C', NULL);
     unlink(game_file); unlink(mod_file); unlink(child_file); unlink(outside_file);
     rmdir(dir); rmdir(game); rmdir(mod); rmdir(outside); rmdir(base);
+    free(canonical_game); free(canonical_mod);
     if (!fails) puts("hle path root selftest: PASS");
     return fails != 0;
 }
