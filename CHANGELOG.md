@@ -6,6 +6,9 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- win32hle: `GetDiskFreeSpaceExA` reports free and total bytes for mapped
+  guest directories through host `statvfs`, including optional 64-bit outputs.
+  UNC paths and Windows quota semantics remain unsupported.
 - win32hle, for eJay 2's engine and its MFC graphics DLL (sp00nznet/ejay):
   winmm answers as a PC with no mixer and no recording device, and has
   `waveOutSetVolume`, `waveOutGetVolume`, `waveOutGetID` (#135); MFC's
