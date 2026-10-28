@@ -60,17 +60,39 @@ class Analyzer:
     """Analyze CIV.EXE to detect functions and build call graph."""
 
     def __init__(self, data: bytes):
+        # Parse the fixed DOS MZ header before using any of its fields. This
+        # tool is also used on binaries recovered from archives, where a short
+        # or unrelated file should be a readable input error rather than a
+        # struct.error (or a misleading partial analysis).
+        if len(data) < 0x1C:
+            raise ValueError('truncated MZ header (need at least 28 bytes)')
+        h = struct.unpack_from('<14H', data, 0)
+        if h[0] != 0x5A4D:
+            raise ValueError('not an MZ executable')
+
+        last_page, pages, header_paras = h[1], h[2], h[4]
+        if pages == 0:
+            raise ValueError('invalid MZ image size (page count is zero)')
+        if last_page > 511:
+            raise ValueError('invalid MZ image size (last-page byte count exceeds 511)')
+        if header_paras < 2:
+            raise ValueError('invalid MZ header size (fewer than 28 bytes)')
+
+        hdr_size = header_paras * 16
+        img_size = (pages - 1) * 512 + last_page if last_page else pages * 512
+        if hdr_size > img_size:
+            raise ValueError('invalid MZ image size (header extends past image)')
+        if img_size > len(data):
+            raise ValueError('truncated MZ image (declared image exceeds file size)')
+
         self.data = data
         self.functions = []
         self.overlays = []
         self.call_graph = {}
         self.strings = {}
 
-        # Parse main MZ header
-        self.hdr_size = struct.unpack_from('<H', data, 8)[0] * 16
-        pages = struct.unpack_from('<H', data, 4)[0]
-        last_page = struct.unpack_from('<H', data, 2)[0]
-        self.img_size = (pages - 1) * 512 + last_page if last_page else pages * 512
+        self.hdr_size = hdr_size
+        self.img_size = img_size
 
     def find_overlays(self):
         """Locate all overlay modules in the file."""
@@ -373,7 +395,11 @@ def main():
         idx = sys.argv.index('-symbols')
         sym_path = sys.argv[idx + 1]
 
-    analyzer = Analyzer(data)
+    try:
+        analyzer = Analyzer(data)
+    except ValueError as e:
+        print(f'Error: {e}', file=sys.stderr)
+        return 2
     analyzer.find_overlays()
     analyzer.detect_all_functions()
     analyzer.extract_strings()
@@ -384,6 +410,8 @@ def main():
         analyzer.export_symbols(sym_path)
         print(f"\nSymbols exported to: {sym_path}")
 
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
