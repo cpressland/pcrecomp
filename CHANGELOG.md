@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- native32: code the guest generates at run time runs natively, entered with the guest's
+  whole register file (eax..edi, ebp, MMX) on its own stack instead of the C ABI.
+  Executable memory the guest allocates outside its modules (`VirtualAlloc` or
+  `VirtualProtect` with an execute protection) is tracked by built-in shims;
+  `native32_add_generated` adds a range by hand. SimCity 4's software renderer compiles
+  its span loops this way, and through the C-ABI bridge they read 0 for every input.
+- eh32: `NATIVE32_TRACE_EH=1` prints each guest throw and the frame that catches it.
 - win32hle, for eJay 2's engine and its MFC graphics DLL (sp00nznet/ejay):
   winmm answers as a PC with no mixer and no recording device, and has
   `waveOutSetVolume`, `waveOutGetVolume`, `waveOutGetID` (#135); MFC's
