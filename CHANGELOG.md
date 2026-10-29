@@ -68,6 +68,10 @@ versions follow [SemVer](https://semver.org/).
   which the field scan skipped, so it stopped at 5 of 7. Those reads count now,
   and when the payload says the code is plaintext the code section is the one
   holding the OEP. Found on SimCity 4 Deluxe (Steam, app 24780).
+- lift32: `cmpxchg8b`, the 64-bit compare-and-swap. It lifted to a no-op whose
+  following compare still passed, so a lock-free list believed every push and
+  pop happened (Rockall's heap in Rise of Legends then spun on a share lock).
+  Only ZF changes (#150).
 - disasm32: zero fill is not a function. It decodes as `add [eax], al` for as
   long as it lasts, so a zeroed table in the code section passed the probe's
   clean-window test, and a stray `E8` byte (whose targets are never probed)
