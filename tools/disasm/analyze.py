@@ -73,10 +73,10 @@ class Analyzer:
         last_page, pages, header_paras = h[1], h[2], h[4]
         if pages == 0:
             raise ValueError('invalid MZ image size (page count is zero)')
-        if last_page > 511:
-            raise ValueError('invalid MZ image size (last-page byte count exceeds 511)')
+        if last_page > 512:     # 512 = a full last page; DOS loads it (bolo: BOLO3_unpacked.exe)
+            raise ValueError('invalid MZ image size (last-page byte count exceeds 512)')
         if header_paras < 2:
-            raise ValueError('invalid MZ header size (fewer than 28 bytes)')
+            raise ValueError('invalid MZ header size (under 2 paragraphs, 32 bytes)')
 
         hdr_size = header_paras * 16
         img_size = (pages - 1) * 512 + last_page if last_page else pages * 512

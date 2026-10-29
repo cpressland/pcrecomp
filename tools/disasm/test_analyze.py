@@ -42,8 +42,8 @@ def main():
     rejects(b'MZ', 'truncated MZ header')
     rejects(mz_image(signature=b'NE'), 'not an MZ executable')
     rejects(mz_image(pages=0), 'page count is zero')
-    rejects(mz_image(last_page=512), 'exceeds 511')
-    rejects(mz_image(header_paras=1), 'fewer than 28 bytes')
+    rejects(mz_image(last_page=513), 'exceeds 512')
+    rejects(mz_image(header_paras=1), 'under 2 paragraphs')
     rejects(mz_image(pages=1, last_page=16, header_paras=2),
             'header extends past image')
     rejects(mz_image(size=48), 'declared image exceeds file size')
