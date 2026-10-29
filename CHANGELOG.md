@@ -76,6 +76,10 @@ versions follow [SemVer](https://semver.org/).
   following compare still passed, so a lock-free list believed every push and
   pop happened (Rockall's heap in Rise of Legends then spun on a share lock).
   Only ZF changes (#150).
+- disasm32: a data pointer that lands on a label inside another body is kept
+  as an entry (an alias) when it sits in a run of code pointers. The MSVC CRT's
+  x87 dispatch jumps through such tables; dropped, the jump was an unresolved
+  ITAIL (Rise of Legends: 678 kept) (#152).
 - disasm32: zero fill is not a function. It decodes as `add [eax], al` for as
   long as it lasts, so a zeroed table in the code section passed the probe's
   clean-window test, and a stray `E8` byte (whose targets are never probed)

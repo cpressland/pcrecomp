@@ -710,7 +710,7 @@ class Disassembler:
         codegen on decoded garbage.
         """
         found = set()
-        probed = rejected = mid = padded = 0
+        probed = rejected = mid = padded = in_run = 0
         for s in self.sections:
             if s.is_code:
                 continue
@@ -734,6 +734,19 @@ class Disassembler:
                     if va % 16 == 0 and self.read_bytes(va - 1, 1) in (b'\x90', b'\xcc'):
                         padded += 1
                         found.add(va)
+                    # A table of code pointers can hold a label inside another
+                    # handler: the CRT's x87 dispatch (_trandisp) jumps through
+                    # {0x0106FA21, 0x0106E7AD, 0x0106E7B2, ...} in Rise of
+                    # Legends, where 0x0106E7AD is the second `fstp st(0)` of
+                    # the 0x0106E7AB tail. A label cannot be dispatched to, so
+                    # the jump was an unresolved ITAIL. One neighbor in the
+                    # same run that is also code is the evidence; the entry
+                    # becomes an alias of the body that owns it.
+                    elif any(code_start <= n < code_end and (n in covered or n in queued or n in found)
+                             for o in (off - 4, off + 4) if 0 <= o <= len(data) - 4
+                             for n in [int.from_bytes(data[o:o + 4], 'little')]):
+                        in_run += 1
+                        found.add(va)
                     continue
                 if interior is not None and interior[va - code_start]:
                     mid += 1
@@ -746,6 +759,9 @@ class Disassembler:
         if padded:
             print(f"[*] Data scan: {padded} pointer targets start a function after padding "
                   f"that another body ran through")
+        if in_run:
+            print(f"[*] Data scan: {in_run} pointer targets inside a body, kept because "
+                  f"they sit in a run of code pointers")
         if probed or mid:
             print(f"[*] Data scan: probed {probed} pointer targets, "
                   f"rejected {rejected} that do not decode as code "
