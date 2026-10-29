@@ -63,6 +63,11 @@ versions follow [SemVer](https://semver.org/).
   at 0 all eight showed the same tool.
 
 ### Fixed
+- `tools/drm/steamstub.py`: SteamStub 2.x builds that never encrypt the code.
+  Their `steamdrm.dll` reads the unused code-range and AES fields as `[eax+0]`,
+  which the field scan skipped, so it stopped at 5 of 7. Those reads count now,
+  and when the payload says the code is plaintext the code section is the one
+  holding the OEP. Found on SimCity 4 Deluxe (Steam, app 24780).
 - disasm32: zero fill is not a function. It decodes as `add [eax], al` for as
   long as it lasts, so a zeroed table in the code section passed the probe's
   clean-window test, and a stray `E8` byte (whose targets are never probed)

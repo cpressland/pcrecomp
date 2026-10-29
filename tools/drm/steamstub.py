@@ -133,7 +133,8 @@ def drm_field_offsets(dll, checksum):
 
     The export compares payload[0] with the checksum, then copies its fields
     out: five `mov r32, [eax+disp]`, then `lea r32, [eax+disp]` (the AES key)
-    and `add eax, disp` (the first encrypted block), in that order.
+    and `add eax, disp` (the first encrypted block), in that order. A build that
+    never encrypts the code (SimCity 4) compiles the last four as `[eax+0]`.
     """
     at = dll.find(b'\x81\x38' + struct.pack('<I', checksum))
     if at < 0:
@@ -147,7 +148,7 @@ def drm_field_offsets(dll, checksum):
             continue
         dst, src = ops
         if ins.mnemonic in ('mov', 'lea') and dst.type == X86_OP_REG and src.type == X86_OP_MEM \
-                and src.mem.base == X86_REG_EAX and src.mem.index == 0 and src.mem.disp:
+                and src.mem.base == X86_REG_EAX and src.mem.index == 0:
             found.append(src.mem.disp)
         elif ins.mnemonic == 'add' and dst.type == X86_OP_REG and dst.reg == X86_REG_EAX \
                 and src.type == X86_OP_IMM:
@@ -318,6 +319,13 @@ def unwrap(raw):
     appid = hdr[H_APPID:H_APPID + 12].split(b'\0')[0].decode('ascii', 'replace')
     if appid.isdigit() and int(appid) != f['appid']:
         raise StubError('payload app id %d does not match the header\'s %s' % (f['appid'], appid))
+    if f['flags'] & FLAG_CODE_NOT_ENCRYPTED:
+        # The code-range fields are unused then (SimCity 4 reads them all from
+        # payload+0), so the code section is the one holding the OEP.
+        code = next((s for s in pe.sections if s.contains_rva(f['oep'] - base)), None)
+        if code is None:
+            raise StubError('OEP 0x%08X is outside every section' % f['oep'])
+        f['code_va'], f['code_size'] = base + code.VirtualAddress, code.SizeOfRawData
     code = next((s for s in pe.sections if s.VirtualAddress == f['code_va'] - base), None)
     if code is None:
         raise StubError('code VA 0x%08X is not the start of a section' % f['code_va'])
@@ -380,6 +388,12 @@ def selftest():
         'f6c1028915386d0410a33c6d0410')
     assert drm_field_offsets(b'\xcc' * 16 + drm, 0x03C1C421) == dict(zip(
         DRM_FIELDS, (0xDF8, 0xE54, 0x6EC, 0xC98, 0xB34, 0x574, 0xBAC)))
+    # SimCity 4's steamdrm.dll (code not encrypted): the unused fields are [eax+0], still found.
+    sc4 = bytes.fromhex(
+        '8138ef5360d674076a51e9790300008b88d0080000890d286d04108b909c0200008915246d04108b90d40d'
+        '000089152c6d04108b90000000008915306d04108b90000000008915346d04108d90000000000500000000'
+        'f6c1028915386d0410a33c6d0410')
+    assert drm_field_offsets(sc4, 0xD66053EF) == dict(zip(DRM_FIELDS, (0x8D0, 0x29C, 0xDD4, 0, 0, 0, 0)))
     try:
         stub_constants(b'\x55\x8b\xec' + bytes(0x60))
         raise AssertionError('accepted a plain prologue')
