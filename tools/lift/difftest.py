@@ -685,6 +685,13 @@ CASES = [
          mem={SCRATCH: (5).to_bytes(4, 'little')}),
     Case('lock.cmpxchg.differ', bytes.fromhex('f00fb10e'), regs={'eax': 4, 'ecx': 9},
          mem={SCRATCH: (5).to_bytes(4, 'little')}),
+    # lock cmpxchg8b [esi]: edx:eax == [esi] -> [esi] = ecx:ebx; else edx:eax = [esi]
+    Case('lock.cmpxchg8b.equal', bytes.fromhex('f00fc70e'),
+         regs={'eax': 5, 'edx': 7, 'ebx': 0x11, 'ecx': 0x22},
+         mem={SCRATCH: (5 | 7 << 32).to_bytes(8, 'little')}),
+    Case('lock.cmpxchg8b.differ', bytes.fromhex('f00fc70e'),
+         regs={'eax': 5, 'edx': 8, 'ebx': 0x11, 'ecx': 0x22},
+         mem={SCRATCH: (5 | 7 << 32).to_bytes(8, 'little')}),
 ]
 
 # Every x87 register form, i = 1 and 2, from a stack of three distinct values
