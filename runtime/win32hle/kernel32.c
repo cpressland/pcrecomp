@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/stat.h>
 #include "win32hle.h"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>   /* _NSGetExecutablePath */
@@ -45,7 +46,14 @@ static void k_OutputDebugStringA(void){ fprintf(stderr, "[guest] %s", ASTR(0) ? 
 
 /* --- process --- */
 int hle_exe_path(char *out, size_t n) {
-#ifdef __APPLE__
+#ifdef __EMSCRIPTEN__
+    /* no program file: a name in the browser's saved folder (src/web/web.c),
+     * so a host keeps its settings beside it as it would beside the program */
+    struct stat st;
+    if (n < 16) return 0;
+    strcpy(out, stat("/opfs/save", &st) == 0 ? "/opfs/save/ra2" : "/save/ra2");
+    return 1;
+#elif defined(__APPLE__)
     char raw[4096], real[4096];
     uint32_t len = sizeof raw;
     if (!n || _NSGetExecutablePath(raw, &len) != 0 || !realpath(raw, real) || strlen(real) >= n) return 0;
@@ -64,13 +72,21 @@ void hle_set_command_line(const char *cmdline) { g_cmdline = cmdline; }
 
 /* A host may want to close a recording or a window before the process goes. */
 void (*hle_on_exit)(int code);
+#ifdef __EMSCRIPTEN__
+/* From the game's thread (a pthread) only exit() reaches the page: _exit
+ * asks the page's thread to quit while it still holds the runtime alive for
+ * this one, so nothing happens. */
+#define HLE_LEAVE(code) exit(code)
+#else
+#define HLE_LEAVE(code) _exit(code)
+#endif
 void hle_exit(int code) {
     static volatile int once;
-    if (__sync_lock_test_and_set(&once, 1)) _exit(code);
+    if (__sync_lock_test_and_set(&once, 1)) HLE_LEAVE(code);
     if (hle_on_exit) hle_on_exit(code);
     fflush(stdout);
     fflush(stderr);
-    _exit(code);
+    HLE_LEAVE(code);
 }
 
 static void k_GetProcessHeap(void)      { RET(0x00000001u, 0); }        /* every heap is the one heap */

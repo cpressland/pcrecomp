@@ -27,6 +27,7 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include "win32hle.h"
@@ -52,7 +53,81 @@ static int at_or_under(const char *path, const char *root) {
     return path[len] == '/' || path[len] == 0;
 }
 
-/* Append one component to out. An optional anchor clamps lexical parent
+/* ---- directory listings, kept ----
+ * A guest path is matched component by component without case, which
+ * lists the directory on every miss, and a game probes for files it does
+ * not have thousands of times as it loads. On a storage whose every call
+ * is a message to another thread (the browser's) that took minutes, so a
+ * directory's listing is kept until something is written anywhere
+ * (hle_path_changed: the writers call it). */
+#define DIR_CACHE 16
+typedef struct { char *name; int is_dir; } dent_t;
+static struct { char *dir; dent_t *ents; int n; unsigned gen; } g_dc[DIR_CACHE];
+static int g_dc_next;
+static unsigned g_path_gen = 1;
+static pthread_mutex_t g_dc_lock = PTHREAD_MUTEX_INITIALIZER;
+void hle_path_changed(void) { __sync_fetch_and_add(&g_path_gen, 1); }
+static void dc_drop(int i) {
+    for (int k = 0; k < g_dc[i].n; k++) free(g_dc[i].ents[k].name);
+    free(g_dc[i].ents), free(g_dc[i].dir);
+    g_dc[i].ents = NULL, g_dc[i].dir = NULL, g_dc[i].n = 0;
+}
+/* The entry of dir named want (case aside): its name as the directory has
+ * it, and whether it is a directory; 0 when there is none. */
+static int dir_find(const char *dir, const char *want, char *name, size_t n, int *is_dir) {
+    unsigned gen = g_path_gen;
+    pthread_mutex_lock(&g_dc_lock);
+    int slot = -1;
+    for (int i = 0; i < DIR_CACHE; i++)
+        if (g_dc[i].dir && !strcmp(g_dc[i].dir, dir)) { slot = i; break; }
+    if (slot >= 0 && g_dc[slot].gen != gen) { dc_drop(slot); slot = -1; }
+    if (slot < 0) {
+        slot = g_dc_next, g_dc_next = (g_dc_next + 1) % DIR_CACHE;
+        dc_drop(slot);
+        int cap = 64, cnt = 0;
+        dent_t *ents = (dent_t *)malloc(sizeof *ents * (size_t)cap);
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            if (cnt == cap) ents = (dent_t *)realloc(ents, sizeof *ents * (size_t)(cap *= 2));
+            ents[cnt].name = strdup(e->d_name);
+            int t = e->d_type == DT_DIR ? 1 : e->d_type == DT_UNKNOWN ? -1 : 0;
+            if (t < 0) {
+                char full[1024];
+                struct stat st;
+                snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+                t = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+            }
+            ents[cnt++].is_dir = t;
+        }
+        if (d) closedir(d);
+        g_dc[slot].dir = strdup(dir), g_dc[slot].ents = ents, g_dc[slot].n = cnt, g_dc[slot].gen = gen;
+    }
+    int found = 0;
+    for (int k = 0; k < g_dc[slot].n && !found; k++)
+        if (!strcasecmp(g_dc[slot].ents[k].name, want)) {
+            snprintf(name, n, "%s", g_dc[slot].ents[k].name);
+            if (is_dir) *is_dir = g_dc[slot].ents[k].is_dir;
+            found = 1;
+        }
+    pthread_mutex_unlock(&g_dc_lock);
+    return found;
+}
+/* stat, through the listings: 1 if there, with whether it is a directory. */
+static int cached_stat(const char *path, int *is_dir) {
+    const char *slash = strrchr(path, '/');
+    if (!slash || !slash[1]) { struct stat st; int r = stat(path, &st) == 0; if (r && is_dir) *is_dir = S_ISDIR(st.st_mode); return r; }
+    char dir[1024], name[512];
+    size_t dl = (size_t)(slash - path);
+    if (dl >= sizeof dir) return 0;
+    memcpy(dir, path, dl), dir[dl] = 0;
+    return dir_find(dl ? dir : "/", slash + 1, name, sizeof name, is_dir) && !strcmp(name, slash + 1);
+}
+
+/* Append one component to out (which holds an existing directory, or ""
+ * for the cwd), matching it without case if it is not there as spelled.
+ * Returns 1 if the result exists. An optional anchor clamps lexical parent
  * traversal at a mapped root. This does not sandbox symlink targets. */
 static int join_component(char *out, size_t n, const char *anchor, const char *comp, size_t clen) {
     size_t len = strlen(out);
@@ -81,19 +156,9 @@ static int join_component(char *out, size_t n, const char *anchor, const char *c
     if (clen >= sizeof want) clen = sizeof want - 1;
     memcpy(want, comp, clen), want[clen] = 0;
     const char *sep = len && out[len - 1] != '/' ? "/" : "";
-    snprintf(out + len, n - len, "%s%s", sep, want);
-    struct stat st;
-    if (lstat(out[0] ? out : ".", &st) == 0) return 1;
-    out[len] = 0;
-    DIR *d = opendir(len ? out : ".");
-    int found = 0;
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d)))
-            if (!strcasecmp(e->d_name, want)) { snprintf(out + len, n - len, "%s%s", sep, e->d_name); found = 1; break; }
-        closedir(d);
-    }
-    if (!found) snprintf(out + len, n - len, "%s%s", sep, want);
+    char name[512];
+    int found = dir_find(len ? out : ".", want, name, sizeof name, NULL);
+    snprintf(out + len, n - len, "%s%s", sep, found ? name : want);
     return found;
 }
 
@@ -198,6 +263,7 @@ int hle_host_path_for_write(const char *guest, char *out, size_t n, int keep) {
         if (in) fclose(in);
         if (to) fclose(to);
     }
+    hle_path_changed();                                    /* what the caller writes next is new */
     snprintf(out, n, "%s", ov);
     return keep && exists;
 }
@@ -210,7 +276,9 @@ int hle_host_path(const char *guest, char *out, size_t n) {
     struct stat st;
     /* A file only: a directory stays the game's (the cwd is set through here,
      * and FindFirstFileA lists both) */
-    if (g_overlay && hle_overlay_of(out, ov, sizeof ov) == 1 && stat(ov, &st) == 0 && !S_ISDIR(st.st_mode)) {
+    int is_dir = 0;
+    (void)st;
+    if (g_overlay && hle_overlay_of(out, ov, sizeof ov) == 1 && cached_stat(ov, &is_dir) && !is_dir) {
         snprintf(out, n, "%s", ov);
         return 1;
     }
@@ -247,8 +315,9 @@ static int host_path_plain(const char *guest, char *out, size_t n) {
         while (*p == '\\' || *p == '/') p++;
     }
     if (!out[0]) snprintf(out, n, ".");
-    struct stat st;
-    return lstat(out[0] ? out : ".", &st) == 0;
+    /* Through the kept listings (#148), not a stat per probe; a listing has
+     * broken symlinks too, as lstat would (#146). */
+    return cached_stat(out, NULL);
 }
 
 /* A host path (absolute) as the guest sees it: under a mapped drive, that

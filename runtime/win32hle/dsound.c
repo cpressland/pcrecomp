@@ -160,6 +160,88 @@ static void mix(void *ud, Uint8 *stream, int len) {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+/* In a browser SDL's audio cannot be opened from the game's thread (its
+ * Emscripten driver keeps its state on the page's thread), so the mixer
+ * feeds a ring of stereo s16 frames in shared memory from a thread of its
+ * own, and an AudioWorklet on the page's thread (plain JS, started here)
+ * plays the ring out. [0] is the read index (the worklet's), [1] the
+ * write index (the feeder's), both free-running frame counts. */
+#include <emscripten.h>
+#include <emscripten/threading.h>
+#include <unistd.h>
+#define RING_FRAMES 16384u                                /* 370 ms; the feeder keeps ~90 ms queued */
+#define RING_KEEP   4096u
+static int16_t g_ring[RING_FRAMES * 2];
+static uint32_t g_ring_idx[2];
+EM_JS(void, web_audio_start_js, (int rate, void *ring, int frames, void *idx), {
+    try {
+        var ctx = new AudioContext({ sampleRate: rate, latencyHint: 'interactive' });
+        var code = "class R extends AudioWorkletProcessor {" +
+            " constructor(o) { super(); var p = o.processorOptions; this.pcm = new Int16Array(p.buffer, p.ring, p.frames * 2); this.idx = new Uint32Array(p.buffer, p.idx, 2); this.mask = p.frames - 1; }" +
+            " process(inputs, outputs) { var out = outputs[0], L = out[0], R = out[1] || out[0], n = L.length;" +
+            "  var rd = Atomics.load(this.idx, 0), wr = Atomics.load(this.idx, 1), avail = (wr - rd) >>> 0, take = Math.min(n, avail), i;" +
+            "  for (i = 0; i < take; i++) { var f = ((rd + i) & this.mask) * 2; L[i] = this.pcm[f] / 32768; R[i] = this.pcm[f + 1] / 32768; }" +
+            "  for (; i < n; i++) { L[i] = 0; R[i] = 0; }" +
+            "  Atomics.store(this.idx, 0, (rd + take) >>> 0); return true; } }" +
+            " registerProcessor('ra2-ring', R);";
+        var url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+        ctx.audioWorklet.addModule(url).then(function() {
+            var node = new AudioWorkletNode(ctx, 'ra2-ring', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+                processorOptions: { buffer: wasmMemory.buffer, ring: ring, frames: frames, idx: idx } });
+            node.connect(ctx.destination);
+        }).catch(function(e) { err('[dsound] worklet: ' + e); });
+        var resume = function() { if (ctx.state !== 'running') ctx.resume(); };
+        document.addEventListener('click', resume);
+        document.addEventListener('keydown', resume);
+        resume();
+        Module['ra2Audio'] = ctx;
+    } catch (e) { err('[dsound] web audio: ' + e); }
+});
+static void web_audio_start(int rate, void *ring, int frames, void *idx) {
+    /* on the page's thread, which owns the AudioContext */
+    emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VIIII, web_audio_start_js, rate, ring, frames, idx);
+}
+static void *audio_feeder(void *arg) {
+    (void)arg;
+    uint8_t chunk[1024 * 4];
+    uint32_t last_rd = 0, moved_at = hle_ticks_ms();
+    for (;;) {
+        uint32_t rd = __atomic_load_n(&g_ring_idx[0], __ATOMIC_ACQUIRE), wr = g_ring_idx[1];
+        uint32_t used = wr - rd, now = hle_ticks_ms();
+        if (rd != last_rd) last_rd = rd, moved_at = now;
+        if (used < RING_KEEP && RING_FRAMES - used >= 1024u) {
+            mix(NULL, chunk, sizeof chunk);
+            for (uint32_t i = 0; i < 1024u; i++) {
+                uint32_t f = (wr + i) & (RING_FRAMES - 1);
+                g_ring[2 * f] = ((int16_t *)chunk)[2 * i];
+                g_ring[2 * f + 1] = ((int16_t *)chunk)[2 * i + 1];
+            }
+            __atomic_store_n(&g_ring_idx[1], wr + 1024u, __ATOMIC_RELEASE);
+        } else if (now - moved_at > 500) {
+            /* the page is not playing (its AudioContext suspended, the tab in
+             * the background): the mixer runs anyway, into nothing, so the
+             * buffers' play cursors keep moving and a game watching them
+             * (streaming music, waiting for a sound to end) goes on */
+            mix(NULL, chunk, sizeof chunk);
+            usleep(1024u * 1000u / OUT_RATE * 1000u);
+        } else {
+            usleep(5000);
+        }
+    }
+    return NULL;
+}
+static int audio_open(void) {
+    if (g_audio_ok >= 0) return g_audio_ok;
+    g_audio_ok = 0;
+    pthread_t t;
+    if (pthread_create(&t, NULL, audio_feeder, NULL) != 0) { fprintf(stderr, "[dsound] no feeder thread: silent\n"); return 0; }
+    pthread_detach(t);
+    web_audio_start(OUT_RATE, g_ring, (int)RING_FRAMES, g_ring_idx);
+    fprintf(stderr, "[dsound] web audio, %d Hz\n", OUT_RATE);
+    return g_audio_ok = 1;
+}
+#else
 static int audio_open(void) {
     if (g_audio_ok >= 0) return g_audio_ok;
     g_audio_ok = 0;
@@ -183,6 +265,7 @@ static int audio_open(void) {
     fprintf(stderr, "[dsound] %s, %d Hz\n", SDL_GetCurrentAudioDriver(), have.freq);
     return g_audio_ok = 1;
 }
+#endif
 
 /* the object: vtable, refs, then the buffer slot */
 #define SLOT(self) MEM32((self) + 8)

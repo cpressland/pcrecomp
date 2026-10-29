@@ -321,6 +321,7 @@ static int write_cfb(const char *path, node_t *root) {
     }
     put(&out, fat, (size_t)fat_secs * 512);
     FILE *f = fopen(path, "wb");
+    hle_path_changed();
     int ok = f && fwrite(out.b, 1, out.n, f) == out.n;
     if (f) fclose(f);
     free(out.b), free(mini.b), free(big.b), free(minifat), free(bigfat), free(fat), free(g_ents);
@@ -532,20 +533,24 @@ static void vtables(void) {
     (void)x_notimpl_2, (void)x_notimpl_4;
 }
 
-static void wide_path(uint32_t w, char *out, size_t n) {
+/* The file's host path; one to be written goes to a mod's overlay (with
+ * keep, a copy of the game's own is made there first, for a save opened to
+ * change), as CreateFileA's does. */
+static void wide_path(uint32_t w, char *out, size_t n, int write, int keep) {
     char g[1024];
     const uint16_t *s = (const uint16_t *)hle_ptr(w);
     size_t k = 0;
     for (; s && s[k] && k + 1 < sizeof g; k++) g[k] = (char)(s[k] < 256 ? s[k] : '_');
     g[k] = 0;
-    hle_host_path(g, out, n);
+    if (write) hle_host_path_for_write(g, out, n, keep);
+    else hle_host_path(g, out, n);
 }
 
 static void s_StgCreateDocfile(void) {                   /* (name, mode, reserved, &stg) */
     vtables();
     char path[1024];
     if (!A32(0) || !A32(3)) RET(STG_E_INVALIDPOINTER, 4);
-    wide_path(A32(0), path, sizeof path);
+    wide_path(A32(0), path, sizeof path, 1, 0);
     FILE *t = fopen(path, "rb");
     if (t && !(A32(1) & STGM_CREATE)) { fclose(t); RET(STG_E_FILEALREADYEXISTS, 4); }
     if (t) fclose(t);
@@ -561,7 +566,7 @@ static void s_StgOpenStorage(void) {                     /* (name, priority, mod
     vtables();
     char path[1024];
     if (!A32(0) || !A32(5)) RET(STG_E_INVALIDPOINTER, 6);
-    wide_path(A32(0), path, sizeof path);
+    wide_path(A32(0), path, sizeof path, (A32(2) & 3u) != 0, 1);
     FILE *fp = fopen(path, "rb");
     if (!fp) RET(STG_E_FILENOTFOUND, 6);
     fseek(fp, 0, SEEK_END);

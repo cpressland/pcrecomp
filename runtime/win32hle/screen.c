@@ -24,6 +24,9 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include "win32hle.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define WM_MOUSEMOVE   0x0200u
 #define WM_LBUTTONDOWN 0x0201u
@@ -67,7 +70,11 @@ static void menu_draw(void);
 static int g_menu_depth;                                 /* hle_screen_menu's levels open; 0: closed */
 static void set_fullscreen(int on) {
     g_fullscreen = on, g_menu_depth = 0;
+#ifdef __EMSCRIPTEN__
+    (void)on;                                              /* the page does it, on the key itself (a gesture) */
+#else
     if (g_win) SDL_SetWindowFullscreen(g_win, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+#endif
     settings_changed();
 }
 void hle_screen_fullscreen(int on) { set_fullscreen(on != 0); }
@@ -182,6 +189,18 @@ static void to_game(int x, int y, int *gx, int *gy) {
     if (*gy >= h) *gy = h - 1;
 }
 
+#ifdef __EMSCRIPTEN__
+static void web_present(const uint16_t *fb, int w, int h, int dx, int dy, int dw, int dh, int mode, int cw, int ch) {
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module['ra2Present']) Module['ra2Present']($0, $1, $2, $3, $4, $5, $6, $7, $8, $9); },
+                             fb, w, h, dx, dy, dw, dh, mode, cw, ch);
+}
+static void web_menu(int open) {
+    static int was = -1;
+    if (open == was) return;
+    was = open;
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module['ra2Menu']) Module['ra2Menu']($0); }, open);
+}
+#endif
 static void present(void) {
     const uint8_t *px;
     const uint32_t *pal;
@@ -196,6 +215,47 @@ static void present(void) {
     g_shown_seq = seq, g_last_present = now;
     if (hle_screen_frame_hook) hle_screen_frame_hook(px, w, h, pitch, bpp);
     if (!g_ren) return;
+#ifdef __EMSCRIPTEN__
+    /* The page draws the frame with WebGL on its own thread (index.html's
+     * ra2Present): SDL's software renderer scaled it on this thread and
+     * handed the whole window's pixels over, which took longer than the
+     * game's frame, so the game never went idle. The frame goes as RGB565
+     * in one of two buffers (the page reads it later); the place in the
+     * window is this thread's, so the mouse maps the same way. SDL still
+     * draws the host's menu (F10), over which the page's canvas hides. */
+    if (bpp == 16) {
+        int ww, wh;
+        SDL_GetRendererOutputSize(g_ren, &ww, &wh);
+        if ((long long)ww * h > (long long)wh * w) g_dst.h = wh, g_dst.w = (int)((long long)wh * w / h);
+        else g_dst.w = ww, g_dst.h = (int)((long long)ww * h / w);
+        if (g_mode == 4) {
+            int k = ww / w < wh / h ? ww / w : wh / h;
+            if (k < 1) k = 1;
+            g_dst.w = w * k, g_dst.h = h * k;
+        }
+        g_dst.x = (ww - g_dst.w) / 2, g_dst.y = (wh - g_dst.h) / 2;
+        if (g_menu_depth) {                              /* SDL's picture and menu: the page's canvas steps aside */
+            web_menu(1);
+        } else {
+            static uint16_t *fb[2];
+            static size_t fbn;
+            static int which;
+            if (fbn < (size_t)w * h) {
+                free(fb[0]); free(fb[1]);
+                fbn = (size_t)w * h;
+                fb[0] = (uint16_t *)malloc(fbn * 2), fb[1] = (uint16_t *)malloc(fbn * 2);
+            }
+            which ^= 1;
+            uint16_t *dst = fb[which];
+            if (dst) {
+                for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * w, px + (size_t)y * pitch, (size_t)w * 2);
+                web_menu(0);
+                web_present(dst, w, h, g_dst.x, g_dst.y, g_dst.w, g_dst.h, g_mode, ww, wh);
+            }
+            return;
+        }
+    }
+#endif
     int hd = 0, ov = 0, ovx = 0, ovy = 0, ovw = 0, ovh = 0;
     if (bpp == 16 && hle_screen_overlay_hook) {        /* 1x base scaled on the GPU + an Nx overlay */
         if (g_ov_n < (size_t)w * h * 9) {              /* sized for the largest scale (3x) */
@@ -519,7 +579,9 @@ static void menu_draw(void) {
     }
 }
 
+#ifndef __EMSCRIPTEN__
 int hle_screen_menu_open(void) { return g_menu_depth > 0; }
+#endif
 
 /* The size of the display the window is on (the first, before it opens):
  * SDL's desktop mode, in points, so a Retina Mac's logical size. */
@@ -530,6 +592,59 @@ int hle_screen_desktop(int *w, int *h) {
     *w = m.w, *h = m.h;
     return 1;
 }
+#ifdef __EMSCRIPTEN__
+/* In a browser the page draws the menu (index.html's ra2PopupMenu), as HTML
+ * at the mouse: SDL's own, drawn with its software renderer, took longer
+ * than a frame to show, and the game then never went idle to read a key.
+ * The items go over as JSON; the page writes the choice (0: none yet, -1:
+ * closed) into g_web_choice, and the pump calls chosen() on this thread. */
+static volatile int g_web_choice;
+static void (*g_web_chosen)(int id);
+static char g_web_menu_json[16384];
+static size_t json_item(char *out, size_t n, const hle_menu_item_t *it) {
+    size_t k = 0;
+    if (!it->label) return (size_t)snprintf(out, n, "null");
+    k += (size_t)snprintf(out + k, n - k, "{\"label\":\"");
+    for (const char *p = it->label; *p && k + 8 < n; p++) {
+        if (*p == '"' || *p == '\\') out[k++] = '\\';
+        out[k++] = *p;
+    }
+    k += (size_t)snprintf(out + k, n - k, "\",\"hint\":\"%s\",\"id\":%d,\"checked\":%d", it->hint ? it->hint : "", it->id, it->checked ? 1 : 0);
+    if (it->sub && it->nsub > 0) {
+        k += (size_t)snprintf(out + k, n - k, ",\"sub\":[");
+        for (int i = 0; i < it->nsub && k + 64 < n; i++) {
+            if (i) out[k++] = ',';
+            k += json_item(out + k, n - k, &it->sub[i]);
+        }
+        k += (size_t)snprintf(out + k, n - k, "]");
+    }
+    k += (size_t)snprintf(out + k, n - k, "}");
+    return k;
+}
+void hle_screen_menu(const hle_menu_item_t *items, int n, void (*chosen)(int id)) {
+    if (!items || n <= 0) return;
+    size_t k = 0;
+    g_web_menu_json[k++] = '[';
+    for (int i = 0; i < n && k + 64 < sizeof g_web_menu_json; i++) {
+        if (i) g_web_menu_json[k++] = ',';
+        k += json_item(g_web_menu_json + k, sizeof g_web_menu_json - k, &items[i]);
+    }
+    g_web_menu_json[k++] = ']';
+    g_web_menu_json[k] = 0;
+    g_web_choice = 0, g_web_chosen = chosen;
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module['ra2PopupMenu']) Module['ra2PopupMenu'](UTF8ToString($0), $1); else HEAP32[$1 >> 2] = -1; },
+                             g_web_menu_json, &g_web_choice);
+}
+int hle_screen_menu_open(void) { return g_web_chosen != NULL; }
+static void web_menu_poll(void) {
+    if (!g_web_chosen || !g_web_choice) return;
+    int id = g_web_choice;
+    void (*cb)(int) = g_web_chosen;
+    g_web_choice = 0, g_web_chosen = NULL;
+    if (id > 0) cb(id);
+}
+#endif
+#ifndef __EMSCRIPTEN__
 void hle_screen_menu(const hle_menu_item_t *items, int n, void (*chosen)(int id)) {
     int pw, ph, ww, wh, mx, my;
     if (!g_ren || !items || n <= 0) return;
@@ -550,11 +665,27 @@ void hle_screen_menu(const hle_menu_item_t *items, int n, void (*chosen)(int id)
     g_menu_depth = 1, g_menu_chosen = chosen, g_menu_eat_up = 0;
     menu_dirty();
 }
+#endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/threading.h>
+#endif
+int g_input_trace;                                         /* a host's --inputtrace */
 void hle_screen_pump(void) {
+#ifdef __EMSCRIPTEN__
+    /* the browser's main thread queues this thread's input callbacks */
+    emscripten_current_thread_process_queued_calls();
+    web_menu_poll();
+#endif
     SDL_Event e;
     if (g_win) update_cursor();
     while (g_win && SDL_PollEvent(&e)) {
+#ifdef __EMSCRIPTEN__
+        if (getenv("RA2_INPUT_TRACE") || g_input_trace) {
+            if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) fprintf(stderr, "[input] key %s scancode %d repeat %d\n", e.type == SDL_KEYDOWN ? "down" : "up", e.key.keysym.scancode, e.key.repeat);
+            else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) fprintf(stderr, "[input] button %d %s at %d,%d\n", e.button.button, e.type == SDL_MOUSEBUTTONDOWN ? "down" : "up", e.button.x, e.button.y);
+        }
+#endif
         if (g_menu_depth && menu_event(&e)) continue;
         if (g_menu_eat_up && e.type == SDL_MOUSEBUTTONUP) { g_menu_eat_up = 0; continue; }
         switch (e.type) {
@@ -640,8 +771,17 @@ int hle_screen_open(const char *title, int fullscreen, int headless) {
     g_win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 960,
                              SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     if (!g_win) { fprintf(stderr, "[screen] window: %s\n", SDL_GetError()); return -1; }
+#ifdef __EMSCRIPTEN__
+    /* In a browser the game runs on a worker thread and the canvas belongs
+     * to the page's: SDL's GL renderer would need the WebGL context made
+     * current on this thread, which its EGL path (proxied to the page's
+     * thread) does not do. The software renderer draws into the window's
+     * framebuffer, which SDL hands to the canvas from the page's thread. */
+    g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_SOFTWARE);
+#else
     g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_PRESENTVSYNC);
     if (!g_ren) g_ren = SDL_CreateRenderer(g_win, -1, SDL_RENDERER_SOFTWARE);
+#endif
     if (!g_ren) { fprintf(stderr, "[screen] renderer: %s\n", SDL_GetError()); return -1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     SDL_ShowCursor(SDL_DISABLE);                         /* the game draws its own */

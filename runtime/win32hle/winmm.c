@@ -43,7 +43,9 @@ static void m_timeGetDevCaps(void) {           /* (&TIMECAPS, size) */
 #define MAX_MMTIMERS 32
 static struct { volatile int used, killed, inflight; uint32_t id, delay, proc, user, flags; pthread_t thread; } g_mmt[MAX_MMTIMERS];
 static uint32_t g_mmt_next = 1;
+volatile unsigned hle_mmt_fired, hle_mmt_started;      /* a host's diagnostics */
 static void *mmtimer(void *arg) {
+    __sync_fetch_and_add(&hle_mmt_started, 1);
     int i = (int)(intptr_t)arg;
     uint32_t due = hle_ticks_ms() + g_mmt[i].delay;
     for (;;) {
@@ -60,6 +62,7 @@ static void *mmtimer(void *arg) {
             } else {
                 uint32_t a[5] = { g_mmt[i].id, 0, g_mmt[i].user, 0, 0 };
                 hle_call_guest(g_mmt[i].proc, 5, a);
+                __sync_fetch_and_add(&hle_mmt_fired, 1);
             }
         }
         __sync_fetch_and_sub(&g_mmt[i].inflight, 1);
