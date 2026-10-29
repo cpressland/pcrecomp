@@ -1099,6 +1099,15 @@ static inline void CPUID_impl(uint32_t eax_val, uint32_t ebx_val, uint32_t ecx_v
  * unresolved dispatch is far more useful with its caller named. */
 extern uint32_t g_cur_func;
 
+/* Enter a lifted body at an address inside it, not at its start. An alias
+ * entry (a catalog entry inside another function's code) lifts as a stub that
+ * sets this and calls the body that owns the code; the body's prologue jumps
+ * to the label and clears it (generate.alias_stub, lift_function_linear's
+ * alias_entries). Without it every alias is a second copy of the rest of its
+ * parent. One instance is enough: it is set and read with no guest code in
+ * between, under the machine lock. */
+RECOMP_WEAK uint32_t g_alias_entry;
+
 /* ICALL trace ring buffer for crash diagnostics.
  *
  * Both halves matter. A target on its own says which vtable slot ran; the

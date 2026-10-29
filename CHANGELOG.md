@@ -6,6 +6,10 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- generate: `lift_function_linear(alias_entries=...)` and `alias_stub`: an
+  alias enters the body that owns its code through `g_alias_entry` and the
+  local dispatch, instead of being lifted as a copy of the rest of it. Opt-in.
+  Rise of Legends: 33.4M lines of C -> 8.0M (#151).
 - win32hle, for eJay 2's engine and its MFC graphics DLL (sp00nznet/ejay):
   winmm answers as a PC with no mixer and no recording device, and has
   `waveOutSetVolume`, `waveOutGetVolume`, `waveOutGetID` (#135); MFC's
