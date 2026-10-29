@@ -7,6 +7,10 @@
 #include <sys/stat.h>
 #include "win32hle.h"
 
+/* No guest code: the layer links against an empty dispatch table. */
+const recomp_dispatch_entry_t recomp_dispatch_table[] = {{0, 0}};
+const uint32_t recomp_dispatch_count = 0;
+
 static int fails;
 #define CHECK(label, condition) do { \
     if (!(condition)) { fprintf(stderr, "FAIL %s\n", label); ++fails; } \
