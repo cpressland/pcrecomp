@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- win32hle: a browser host (Emscripten/WebAssembly): the guest image in linear
+  memory, DirectSound through a shared-memory ring an AudioWorklet drains,
+  frames to the page's WebGL presenter, Bink movies played by the page. For
+  every host: the Bink stub reads the real `.bik` header instead of failing
+  (Yuri's Revenge crashed), INI, `_lcreat` and docfile writes go to the mod
+  overlay, and directory listings are kept for the case-insensitive path match
+  until something is written (`hle_path_changed`). (#148, by [@hauxir](https://github.com/hauxir))
 - generate: `lift_function_linear(alias_entries=...)` and `alias_stub`: an
   alias enters the body that owns its code through `g_alias_entry` and the
   local dispatch, instead of being lifted as a copy of the rest of it. Opt-in.
@@ -19,7 +26,9 @@ versions follow [SemVer](https://semver.org/).
 - eh32: `NATIVE32_TRACE_EH=1` prints each guest throw and the frame that catches it.
 - win32hle: `GetDiskFreeSpaceExA` reports free and total bytes for mapped
   guest directories through host `statvfs`, including optional 64-bit outputs.
-  UNC paths and Windows quota semantics remain unsupported.
+  UNC paths and Windows quota semantics remain unsupported. Lexical `..` in a
+  mapped-drive path stops at the drive's root. (#146, by
+  [@yeager](https://github.com/yeager))
 - win32hle, for eJay 2's engine and its MFC graphics DLL (sp00nznet/ejay):
   winmm answers as a PC with no mixer and no recording device, and has
   `waveOutSetVolume`, `waveOutGetVolume`, `waveOutGetID` (#135); MFC's
@@ -77,6 +86,13 @@ versions follow [SemVer](https://semver.org/).
   at 0 all eight showed the same tool.
 
 ### Fixed
+- `tools/drm/unlzexe.py`: malformed LZEXE streams are rejected: header and
+  loader sizes, both relocation-table formats, and back-references before the
+  start of the output (which read from its end through negative indexing).
+  (#145, by [@yeager](https://github.com/yeager))
+- `tools/disasm/analyze.py`: the MZ header is checked against the file before
+  use; bad input is an error and exit status 2, not a struct.error or a partial
+  analysis. `e_cblp` 512 counts as a full last page. (#147, by [@yeager](https://github.com/yeager))
 - `tools/drm/steamstub.py`: SteamStub 2.x builds that never encrypt the code.
   Their `steamdrm.dll` reads the unused code-range and AES fields as `[eax+0]`,
   which the field scan skipped, so it stopped at 5 of 7. Those reads count now,
