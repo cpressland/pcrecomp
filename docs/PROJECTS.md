@@ -338,6 +338,12 @@ else the toolchain has been proven on is smaller, older, or both. It is the
 strongest argument for porting a real vtable scanner from xboxrecomp: a
 function recovery pass that cannot follow a vtable misses most of this binary.
 
+What it gave the toolbox: `cmpxchg8b` in lift32 (#150; it was a no-op, and
+the Rockall heap's lock-free lists spun forever); alias entries that enter
+their owner's body instead of copying it (#151; copies were 75% of the C, one
+40 KB function became 202 MB); and pointer-run entries even on a label (#152,
+the CRT's x87 dispatch).
+
 ---
 
 ## One Must Fall: Battlegrounds (2003)
@@ -637,6 +643,269 @@ pushes. Getting it right needs SP tracking through nested calls, which needs
 the purges being solved for. `idt_to_json.py`'s docstring already said this --
 ".idt records a name per ordinal and almost never an argument size" -- and it
 is right.
+
+---
+
+## SimAnt (1991)
+
+**Repo**: [sp00nznet/simant](https://github.com/sp00nznet/simant) ·
+**Engine**: Win16 NE, Microsoft C, linker 5.30
+
+**Notable**: the first Microsoft C program on the Win16 path (Catz, Dogz and
+Oddballz are Borland). `InitTask` returned CX=0xFFFE, so MS C's crt0 exited
+before any game code ran; far calls through a SELECTOR fixup took their offset
+from the fixup record. The shipped `SIMANTW.SYM` (2,191 names, read by
+`ne/mapsym.py`) seeds the lift. Also 36 purges, real `RT_MENU` menus and
+child-window geometry (#114, #115).
+
+---
+
+## Wolfenstein 3-D (1992)
+
+**Repo**: [sp00nznet/wolf3d-recomp](https://github.com/sp00nznet/wolf3d-recomp) ·
+**Engine**: id Software, 16-bit DOS, LZEXE-packed
+
+**Notable**: `drm/unlzexe.py` and `lift16`, on the DOS machine from Blake
+Stone. Its compiled scalers are code written into memory at start-up, so they
+cannot be lifted and the runtime interprets them. The 16:9 view casts extra
+rays through the game's own raycaster. (Nothing upstreamed.)
+
+---
+
+## Epic Pinball (1993)
+
+**Repo**: [sp00nznet/epicpinball](https://github.com/sp00nznet/epicpinball) ·
+**Engine**: hand-written 16-bit asm, Mode X, MASI sound driver
+
+**Notable**: the MASI Sound Blaster driver uses the 67h prefix in 16-bit code,
+which added 32-bit addressing to decode16/lift16 (#74, `test_addr32_16.py`),
+plus `jmp reg` switches over found arms (#75). The first DOS host that runs one
+program from another: the menu launches EP1-EP13.
+
+---
+
+## Super Solvers: Gizmos & Gadgets! and siblings (1993-1997)
+
+**Repo**: [sp00nznet/gizmos](https://github.com/sp00nznet/gizmos) ·
+**Engine**: Borland C++ PE32 for Win32s, WinG
+
+**Notable**: six titles on one engine layer, drawing code ported from 16-bit
+asm. Its README lists seven lifter bugs fixed upstream, among them `loop` not
+being a block leader, rotates running at 32 bits and publishing no CF, 16-bit
+`push`/`pop` lifted as 32-bit, and narrow-operand flags computed at 32 bits.
+The second Borland PE after Operation Neptune.
+
+---
+
+## Microsoft Space Simulator (1994)
+
+**Repo**: [sp00nznet/msspacesim](https://github.com/sp00nznet/msspacesim) ·
+**Engine**: 16-bit real mode, mostly hand-written 386 asm, EMS 4.0
+
+**Notable**: hand-built call trampolines led to `Lifter.push_calls` (#85, 481
+sites), and the 19 install-time generators to `drm/unexepack.py` (#86). Also
+`bsf`/`bsr` (#87), dword `rcl`/`rcr` keeping the carry (#88; the Kepler solver
+never converged without it), and `Lifter.unwind_sp` for the SMDL interpreter's
+aborts (#90).
+
+---
+
+## NeXTDoom 1.2 (1994)
+
+**Repo**: [sp00nznet/nextdoom](https://github.com/sp00nznet/nextdoom) ·
+**Engine**: NeXTSTEP 3.3 Mach-O fat binary (i386 slice), Objective-C, AppKit
+
+**Notable**: the first non-PE x86 target. It brought `tools/macho` (UFS disk
+reader, fat slices, shlibs) and `runtime/nextstep`, a recomp32 host on SDL2
+with libsys, the ObjC runtime and an AppKit slice (#25): the first host for
+recomp32 code off Windows.
+
+---
+
+## Theme Park (1994)
+
+**Repo**: [sp00nznet/themepark-recomp](https://github.com/sp00nznet/themepark-recomp) ·
+**Engine**: Bullfrog, Watcom, DOS/4GW (LE executable)
+
+**Notable**: the reason the 32-bit DOS-extender path exists. `le/le_parse.py`
+re-wraps the LE as PE32 so disasm32 and lift32 run unchanged (MAIN.EXE has
+19,728 fixups, #68); `runtime/dos32/` with `Lifter(dos=True)` (#69), the DPMI
+heap (#70), relative mouse (#76) and save states (#77); a Linux build that
+leaves memory byte-identical to the Windows one (#84). Narrow `sar` lifted as
+logical, and no sprites drew at 640x480 (#72).
+
+---
+
+## Hover! (1995)
+
+**Repo**: [sp00nznet/hover](https://github.com/sp00nznet/hover) ·
+**Engine**: MSVC 2.x PE32, static MFC 3, GDI
+
+**Notable**: MSVC 2 puts a jump table right after its `jmp`, so the
+negative-index read took the jmp's own displacement as an entry; the table was
+walked as code and level 1 faulted. Fixed in lift/generate (#24), which also
+fixed SimCity 2000's CRT memcpy.
+
+---
+
+## Kai's Power Goo (1996)
+
+**Repo**: [sp00nznet/goo-recomp](https://github.com/sp00nznet/goo-recomp) ·
+**Engine**: MSVC 4 PE32, native `axiom.dll`/`agate.dll` engine
+
+**Notable**: the engine DLLs stay native but ask for "the program's" path and
+module, so the host answers with `PowerGoo.exe`'s identity and patches their
+imports; a virtual CD-ROM drive over a folder. (Nothing upstreamed; it uses
+`is3extract.py`, from Catz.)
+
+---
+
+## Streets of SimCity (1997)
+
+**Repo**: [sp00nznet/streetsofsimcity](https://github.com/sp00nznet/streetsofsimcity) ·
+**Engine**: Maxis, Win32, hand-written software rasterizer
+
+**Notable**: `iso_peek` reads the Joliet tree, so files come off the CD under
+their long names (#92). `lift32`'s `loope`/`loopne` tested CF instead of ZF,
+and the texture spans ended early (#93).
+
+---
+
+## Star Wars: Shadows of the Empire (1997)
+
+**Repo**: [sp00nznet/shadows-recomp](https://github.com/sp00nznet/shadows-recomp) ·
+**Engine**: LucasArts, Win32, Steam's ddraw-to-D3D9 wrapper
+
+**Notable**: brought SteamStub 3.x to `drm/steamstub.py`: the code key sits in
+the stub's own 0xF0-byte header, so the exe unwraps without loading
+`steamdrm.dll` (#110). `fst st(i)` lifted to nothing; the game keeps 1/z in
+st(1), so every projected y was multiplied by 0 and all 3D drew on one row
+(`lift32`, difftest `fpu.fst-st1`, #111).
+
+---
+
+## The Simpsons: Virtual Springfield (1997)
+
+**Repo**: [sp00nznet/virtualspringfield](https://github.com/sp00nznet/virtualspringfield) ·
+**Engine**: MSVC 4.2, Win32, exclusive 640x480 8-bit DirectDraw
+
+**Notable**: a control case: the whole program lifted at pcrecomp `86fe9f5`
+with no toolkit change. The host answers the install check without an
+installer or registry. (Nothing upstreamed.)
+
+---
+
+## Star Wars: Rogue Squadron 3D (1998)
+
+**Repo**: [sp00nznet/rogue-squadron-recomp](https://github.com/sp00nznet/rogue-squadron-recomp) ·
+**Engine**: Factor 5, Win32, DirectDraw/Direct3D 6
+
+**Notable**: the second SteamStub 3.x title; the 3.x layout read off Shadows of
+the Empire unwrapped it on the first try (#110). The host emulates the
+exclusive flip chain inside a window. (Nothing else upstreamed.)
+
+---
+
+## Beavis and Butt-Head: Bunghole in One (1998)
+
+**Repo**: [sp00nznet/bunghole](https://github.com/sp00nznet/bunghole) ·
+**Engine**: `GOLF.EXE` (244 exports) + `00170001.DLL` (imports 93 back), MSVC 5
+
+**Notable**: the first game DLL that calls into its own engine EXE:
+`native32_module`/`native32_export` bind guest to guest (#17). The DLL is
+entered only through `GetProcAddress`, so disasm32 seeds exports (#18); also
+#19 and #21 (false bodies from pointer guesses). The ball never moved until
+flags crossed calls and tail jumps (#20, `flags_selftest.c`).
+
+---
+
+## The House of the Dead (1998)
+
+**Repo**: [sp00nznet/hotd-recomp](https://github.com/sp00nznet/hotd-recomp) ·
+**Engine**: Watcom C PE32, DirectDraw 8-bit
+
+**Notable**: the first Watcom PE. About 250 KB of zeroed tables in `BEGTEXT`
+produced 500 invented functions (14.9M lines; 1.7M after) until disasm32
+learned zero fill is not a function (#129). Watcom sections have
+`VirtualSize` 0, and its code had been running natively until #128. Its task
+scheduler ends every task with `longjmp`, hence guest setjmp/longjmp landing
+pads in native32 (#130).
+
+---
+
+## Star Wars: Rebellion (1998)
+
+**Repo**: [sp00nznet/rebellion-recomp](https://github.com/sp00nznet/rebellion-recomp) ·
+**Engine**: MSVC 5 PE32, DirectDraw 8-bit, Smacker, d3drm
+
+**Notable**: the movie player calls `TerminateThread` on its worker. A thread
+killed while waiting left native32's machine lock broken, and the sound thread
+then faulted in ntdll; fixed for every host (#120, `NATIVE32_LOG_THREADS=1`).
+
+---
+
+## Unreal Tournament (1999)
+
+**Repo**: [sp00nznet/ut99-recomp](https://github.com/sp00nznet/ut99-recomp) ·
+**Engine**: Unreal Engine 1, 14 modules (Steam v436, SteamStub 2.0)
+
+**Notable**: the first multi-module game, four DLLs rebased to fit. It brought
+the SteamStub 2.0 layout (#52) and guest C++ exceptions (`native32` eh32 with
+`lift/eh32.py`), because `StaticLoadObject` catches its own throws; plus MMX
+byte/saturating ops (the HUD drew opaque), ordering jcc after `or`/`xor` (the
+clipper drew shards) and an `_initterm`-only static constructor in UWeb.dll.
+
+---
+
+## Civilization III: Conquests (2003)
+
+**Repo**: [sp00nznet/civ3](https://github.com/sp00nznet/civ3) ·
+**Engine**: VC6 PE32 (Steam), jgl.dll renderer, Bink, Miles
+
+**Notable**: drove the win32hle Linux path: window surfaces for a GDI game
+(`hle_gdi_window_surface`), DIB depth conversion, higher DC and font limits,
+`bink.c`/`mss.c` on ffmpeg. Also the first differential test of lifted C
+against the original on one save: the same state for 19 turns.
+
+---
+
+## Star Wars: Knights of the Old Republic (2003)
+
+**Repo**: [sp00nznet/kotor-recomp](https://github.com/sp00nznet/kotor-recomp) ·
+**Engine**: Odyssey, OpenGL 1.x, Steam 1.03 under SteamStub 2.x
+
+**Notable**: produced `drm/steamstub.py`, a static SteamStub 2.x remover (XOR,
+XTEA, AES; #46). Script commands are registered in about 7 KB of straight-line
+code, so disasm32 decodes past one scan window (#50); native32 keeps the
+guest's last error across the bridge (#49), and its bridge is safe under
+clang-cl (#48).
+
+---
+
+## The Movies (2005)
+
+**Repo**: [sp00nznet/themovies](https://github.com/sp00nznet/themovies) ·
+**Engine**: Lionhead, MSVC, D3D9; Steam build packed with PECompact 2.x + Steam2
+
+**Notable**: `drm/emu_unpack.py` runs the packer stub under Unicorn, so no
+Steam and no window. The first title on `runtime/native32/` (#7), and a run of
+disasm32 fixes (#11-#14): hot-patch `mov edi, edi` starts, noreturn
+fall-through aliases, `generate.true_extent` and `closure`. Lift fixes:
+`fucompp` (#15), and `jp`/`jnp` reading parity at run time, where 274 float
+compares had taken one fixed branch.
+
+---
+
+## Command & Conquer 3: Tiberium Wars (2007)
+
+**Repo**: [sp00nznet/tiberiumwars-recomp](https://github.com/sp00nznet/tiberiumwars-recomp) ·
+**Engine**: EA SAGE, MSVC 2005, compiled for SSE
+
+**Notable**: `repz ret` was unimplemented, so every `/GS` check failed with
+0xC0000409 (#78). The lifter had no SSE, and this exe has about 212,000 SSE
+sites: `lift/lift32_sse.py` added SSE/SSE2 and the EFLAGS-setting x87 compares
+(#79), plus `xadd`/`cmpxchg` (#80) and MSVC's SetThreadName exception in
+native32 (#83).
 
 ---
 

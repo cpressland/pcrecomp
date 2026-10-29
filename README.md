@@ -231,47 +231,69 @@ pipeline run.
 | Project | What | Era | Engine/Tech | Status |
 |---------|------|-----|-------------|--------|
 | **[wholeearth](https://github.com/sp00nznet/wholeearth)** | The Electronic Whole Earth Catalog | 1988 | Macintosh HFS CD-ROM, HyperCard 1.2.2 | Format project - no PC binary on the disc; ships the classic-HFS lister, hands the stacks to `macrecomp` |
-| **[civ](https://github.com/sp00nznet/civ)** | Civilization | 1991 | 16-bit DOS / MSC 5.x | Runs! 672 functions, interactive boot/menu, 164K lines |
+| **[civ](https://github.com/sp00nznet/civ)** | Civilization | 1991 | 16-bit DOS / MSC 5.x | Runs! 672 functions, ~150K lines; intro -> menu -> New Game -> world-gen -> civ-select screen, map tiles not drawn yet |
 | **[operationneptune](https://github.com/sp00nznet/operationneptune)** | Operation Neptune | 1991 / Win32 1998 | Borland PE32, ships its own linker map | **Plays!** CRT -> WinMain -> opening -> in the submarine |
 | **[skifree](https://github.com/sp00nznet/skifree)** | SkiFree | 1991 | Win16/Win32 (`ski32.exe`) | Playable rebuild from decompiled C, cross-platform + extras |
+| **[simant](https://github.com/sp00nznet/simant)** | SimAnt: The Electronic Ant Colony | 1991 | 16-bit Win16 NE, Microsoft C | Pre-alpha - 12,612 lifted blocks, 0 unresolved calls; a Quick Game starts and the colony simulates |
 | **[missileattack](https://github.com/sp00nznet/missileattack)** | Missile Attack! | 1992 | 16-bit Win16 NE, MS linker 5.14 | P0 - the 16-bit pipeline's fixture: 87 KB NE, **one** code segment, 21 KB of code, no segmentation at all |
+| **[wolf3d-recomp](https://github.com/sp00nznet/wolf3d-recomp)** | Wolfenstein 3-D | 1992 | id Software, 16-bit DOS | **Playable!** 747 functions; boots, plays, saves; hi-res and widescreen 3D view, 18/18 conformance |
 | **[tim](https://github.com/sp00nznet/tim)** | The Even More Incredible Machine | 1993 | Borland C++ Win16 NE | P0 - 27 code segments, imports nothing but KERNEL/USER/GDI, names its own window procs |
-| **[bolo](https://github.com/sp00nznet/bolo)** | Bolo Adventures III | 1993 | 16-bit DOS, PKLITE-packed QuickBASIC | Boots & runs! 932 functions, 70K lines, EGA/DOS shimmed to SDL2; shipped `tools/unpklite.py` |
+| **[bolo](https://github.com/sp00nznet/bolo)** | Bolo Adventures III | 1993 | 16-bit DOS, PKLITE-packed QuickBASIC | **Playable!** 932 functions, 70K lines; splash -> puzzle list -> walk Mr. Bolo through puzzles with PC-speaker sound; shipped `tools/unpklite.py` |
 | **[coaster](https://github.com/sp00nznet/coaster)** | Roller Coaster Construction Set | 1993 | 16-bit DOS, Microsoft C (Code To Go) | Boots - 886 functions lifted, runs the MSC startup into `main()` and through device setup, DOS on SDL2 |
-| **[dinopark](https://github.com/sp00nznet/dinopark)** | DinoPark Tycoon | 1993 | 16-bit DOS / Borland large model | Boots! Whole game lifted (~90K lines), renders .PIC screens + .ACT dinosaurs in colour |
-| **[elfish](https://github.com/sp00nznet/elfish)** | El-Fish | 1993 | 16-bit NE + TSXLIB extender | Lifted & links - 2,236 functions, 121 segments, startup executes |
+| **[dinopark](https://github.com/sp00nznet/dinopark)** | DinoPark Tycoon | 1993 | 16-bit DOS / Borland large model | **Plays!** New game, loan, buy land; intro, Mode X graphics, Miles music, EMS, saved parks load - most sound effects still decode wrong |
+| **[elfish](https://github.com/sp00nznet/elfish)** | El-Fish | 1993 | 16-bit NE + TSXLIB extender | Runs to its main menu - 121 segments, 15,213 functions, ~299K lines; startup runs 2,197 functions deep, VESA 640x400 |
+| **[blakestone](https://github.com/sp00nznet/blakestone)** | Blake Stone: Aliens of Gold / Planet Strike | 1993 / 1994 | 16-bit DOS, Borland C++ 3.x, LZEXE-packed (Wolf3D engine) | **Playable!** 969 + 1,003 functions; conformance 22/22 and 17/17; Windows and Linux |
+| **[epicpinball](https://github.com/sp00nznet/epicpinball)** | Epic Pinball | 1993 | 16-bit DOS, hand-written asm, Mode X | **Playable!** All 13 tables; conformance 133/133; Windows and Linux |
+| **[gizmos](https://github.com/sp00nznet/gizmos)** | Super Solvers: Gizmos & Gadgets! (+5 TLC titles) | 1993 / CD 1996 | Borland C++ PE32, Win32s, WinG | Gizmos plays its attract sequence to sign-in; Treasure Mountain draws; others partial |
 | **[msbus](https://github.com/sp00nznet/msbus)** | The Magic School Bus Explores the Human Body | 1994 | Win16 NE, 18 binaries | P0 - ~60 KB of code driving 190 MB of content |
-| **[worldempire](https://github.com/sp00nznet/worldempire)** | World Empire | 1994 | Visual Basic 3 p-code over `VBRUN300.DLL` (Win16 NE) | Runs! The interpreter is the target: 99/99 segments, 14,826 functions, 226K lines, links and executes a real Win16 init path |
+| **[worldempire](https://github.com/sp00nznet/worldempire)** | World Empire | 1994 | Visual Basic 3 p-code over `VBRUN300.DLL` (Win16 NE) | P2 - the interpreter is the target: 99/99 segments, 14,826 functions, 226K lines, 0 lift errors; compiles and links clean, p-code not driven yet |
+| **[msspacesim](https://github.com/sp00nznet/msspacesim)** | Microsoft Space Simulator | 1994 | 16-bit DOS real mode, hand-written 386 asm, EMS | Boots to the simulator and the simulation runs; 1,157 functions |
+| **[nextdoom](https://github.com/sp00nznet/nextdoom)** | NeXTDoom 1.2 | 1994 | NeXTSTEP 3.3 Mach-O (i386 slice), Objective-C | Plays the attract demo; 676 functions, 0 lift errors |
+| **[themepark-recomp](https://github.com/sp00nznet/themepark-recomp)** | Theme Park | 1994 | Bullfrog, Watcom DOS/4GW (LE) | **Playable!** v0.6.0 - 6,517 functions, 0 lift errors; Windows and Linux, network play |
 | **[tv](https://github.com/sp00nznet/tv)** | Terminal Velocity | 1995 | Watcom C, DOS/4GW LE | P0 - P1 is building the LE/LX front end this toolbox does not have yet |
-| **[bob](https://github.com/sp00nznet/bob)** | Microsoft Bob | 1995 | Win16 NE + MFC, Jet/Access, WinG | Bring-up - all three modules lift link-clean, `InitInstance` runs Bob's real startup, frontier is inside Jet |
-| **[hellbender](https://github.com/sp00nznet/hellbender)** | Hellbender | 1996 | Terminal Reality voxel engine (Win32/MSVC) | Bring-up - lifts clean (5,262 functions, 0 errors), 507 import bridges; same toolchain as Fury³ |
+| **[bob](https://github.com/sp00nznet/bob)** | Microsoft Bob | 1995 | Win16 NE + MFC, Jet/Access, WinG | Bring-up - six modules (Bob + Jet 1.1) lift link-clean; HOME.EXE runs ~277K lifted calls, Jet opens every database; frontier is a host `longjmp` |
 | **[fury3](https://github.com/sp00nznet/fury3)** | Fury³ | 1995 | Terminal Reality voxel engine (Win32/MSVC) | **Playable!** Flies the canyon - 1,945 functions, SDL2+imgui frontend, real joystick |
-| **[mtm](https://github.com/sp00nznet/mtm)** | Monster Truck Madness 1 + 2 | 1996 / 1998 | Terminal Reality, voxel runtime as a standalone DLL | P0 - the Fury³ engine a third time, renderer split into named DLLs |
-| **[catz](https://github.com/sp00nznet/catz-recomp)** | Catz | 1996 | 16-bit NE engine DLL (PF Magic) | Runs! Win32 window, original frame loop, toys and saving work |
-| **[encarta](https://github.com/sp00nznet/encarta)** | Encarta 97 Encyclopedia | 1996 | MFC 4.0 + proprietary | **Runs!** Whole app lifted (7,326 fns); hybrid boundary puts the app body in recompiled code - 10,242 real MFC virtual dispatches land lifted per session |
-| **[simcity2000](https://github.com/sp00nznet/simcity2000)** | SimCity 2000 (CD / Win95 edition) | 1996 | Maxis, MFC 4.0 + static CRT (Win32) | Plays (Windows); the **win32hle Linux bring-up** runs its whole MFC startup into the main window + toolbar |
-| **[gta](https://github.com/sp00nznet/gta)** | Grand Theft Auto | 1997 | DMA "Race'n'Chase" | Builds & runs - 4,094 functions, 444K lines, runtime bringup |
-| **[pod](https://github.com/sp00nznet/pod-recomp)** | POD Gold | 1997 | Ubi Soft MMX software rasteriser | Compiles & links - 3,405 functions, 0 lift errors, 422K lines |
-| **[ejay](https://github.com/sp00nznet/ejay)** | Dance eJay 1 + 2 | 1997 | PXD Musicsoft audio engine behind a VB front end | **Plays and draws!** Decodes its intro, streams to a real sound card at 22,050 Hz and animates its cursor - out of recompiled 16-bit code |
+| **[hover](https://github.com/sp00nznet/hover)** | Hover! | 1995 | MSVC 2.x PE32, static MFC 3, GDI | **Playable!** Level 1 to the end; 5,135 functions, 0 lift errors; split screen and online |
+| **[hellbender](https://github.com/sp00nznet/hellbender)** | Hellbender | 1996 | Terminal Reality voxel engine (Win32/MSVC) | Bring-up - lifts clean (5,262 functions, 0 errors), 507 import bridges; same toolchain as Fury³ |
+| **[mtm](https://github.com/sp00nznet/mtm)** | Monster Truck Madness 1 + 2 | 1996 / 1998 | Terminal Reality, voxel runtime as a standalone DLL | Alpha - MTM2 lifted whole (22,279 functions, 0 lift errors, 2.46M lines); intros, menus, Driver Check-in, a race drives on the software renderer |
+| **[catz](https://github.com/sp00nznet/catz-recomp)** | Catz | 1996 | 16-bit NE engine DLL (PF Magic) | **Playable!** Win32 window, original frame loop; adoption, toys, saving and sound work |
+| **[encarta](https://github.com/sp00nznet/encarta)** | Encarta 97 Encyclopedia | 1996 | MFC 4.0 + proprietary | **Runs!** Alpha released - 7,326 fns lifted, 0 unhandled; browses articles, plays MindMaze, pictures and video; still hybrid over real MFC40, conformance 10/10 |
+| **[simcity2000](https://github.com/sp00nznet/simcity2000)** | SimCity 2000 (CD / Win95 edition) | 1996 | Maxis, MFC 4.0 + static CRT (Win32) | **Plays!** v0.4.0 alpha - 9,870 functions, 0 lift errors; build, save, load, simulation matches the original to the dollar; Windows + Linux under Wine |
+| **[goo-recomp](https://github.com/sp00nznet/goo-recomp)** | Kai's Power Goo | 1996 | MSVC 4 PE32, native engine DLLs | Map and Goo Room work; 1,138 functions, 0 lift errors |
+| **[gta](https://github.com/sp00nznet/gta)** | Grand Theft Auto | 1997 | DMA "Race'n'Chase" | Runs to its front end - 2,590 functions, 952K lines, 0 errors; DirectDraw renders, keys reach city select, waveOut sound; never starts a city yet |
+| **[pod](https://github.com/sp00nznet/pod-recomp)** | POD Gold | 1997 | Ubi Soft MMX software rasteriser | **Runs!** Boot to race and back: Indeo intros through the lifted codec, main menu, attract-mode races with the 3D world drawn - 9,239 functions, 0 lift errors, conformance 16/16 |
+| **[ejay](https://github.com/sp00nznet/ejay)** | Dance eJay 1 + 2 | 1997 | PXD Musicsoft audio engine behind a VB front end | **Plays!** v0.1.0 alpha - Dance, HipHop and Techno eJay 2 open their workspace and play on Windows, Linux and macOS; Dance eJay 1's engine is recompiled and its intro streams |
 | **[xvt](https://github.com/sp00nznet/xvt)** | X-Wing vs TIE Fighter + Balance of Power | 1997 | Totally Games (the X-Wing Alliance engine's predecessor) | Boots to a window - 1,790 functions, the guest CRT runs into `WinMain` and messages dispatch into recompiled code; DirectDraw next |
 | **[fallout1-re](https://github.com/sp00nznet/fallout1-re)** | Fallout | 1997 | Custom (Interplay) | Fork - native + HTML5 web port, multiplayer |
+| **[shadows-recomp](https://github.com/sp00nznet/shadows-recomp)** | Star Wars: Shadows of the Empire | 1997 | LucasArts (Win32, DirectDraw/Direct3D) | **First level plays!** 2,806 functions, 0 lift errors; menus, cinematics, 3D, widescreen |
+| **[streetsofsimcity](https://github.com/sp00nznet/streetsofsimcity)** | Streets of SimCity | 1997 | Maxis (Win32, software renderer) | **It drives!** 22,308 functions, 0 lift errors; menus, garage and the city, 12/12 conformance |
+| **[virtualspringfield](https://github.com/sp00nznet/virtualspringfield)** | The Simpsons: Virtual Springfield | 1997 | MSVC 4.2 (Win32, DirectDraw 8-bit) | Alpha - 832 functions, 0 lift errors; intro, Town Square, area map, 11/11 conformance |
 | **[fallout2-re](https://github.com/sp00nznet/fallout2-re)** | Fallout 2 | 1998 | Custom (Interplay) | Fork - decompilation ~complete (alexbatalov upstream) |
 | **[trespasser](https://github.com/sp00nznet/trespasser)** | Jurassic Park: Trespasser | 1998 | DreamWorks Interactive rigid-body engine (MSVC 6.0) | P0 - reconnaissance. Ships a linker map, which makes it the calibration target for function recovery |
-| **[nocturne](https://github.com/sp00nznet/nocturne)** | Nocturne | 1999 | Terminal Reality, Watcom C/C++32 | Phase 7 - 6,027 functions lift with 0 errors; real window, 42 MB image mapped, IAT dispatch, 95 of 171 imports live |
-| **[tiberiansun-recomp](https://github.com/sp00nznet/tiberiansun-recomp)** | C&C: Tiberian Sun + Firestorm | 1999 | Westwood TS engine (Win32) | **Runs natively on Linux** (win32hle): boots, plays its movies and music, runs its menus, and plays a skirmish - no Wine |
-| **[mechwarrior3-recomp](https://github.com/sp00nznet/mechwarrior3-recomp)** | MechWarrior 3 | 1999 | Zipper GOS engine (VC6 + MFC42, DirectX 6) | Compiles - 2,805 functions, 0 lift errors, 158K lines, all 7 TUs build as a static lib |
+| **[bunghole](https://github.com/sp00nznet/bunghole)** | Beavis and Butt-Head: Bunghole in One | 1998 | MSVC 5 PE32, engine EXE + game DLL, DirectDraw | Menus and hole 1's fly-through; 1,944 functions, 0 lift errors; putt stalls on pcrecomp main (17/18) |
+| **[hotd-recomp](https://github.com/sp00nznet/hotd-recomp)** | The House of the Dead | 1998 | Watcom C PE32, DirectDraw 8-bit | **In game!** Arcade chapter 1 plays; 11,708 functions, 0 lift errors; 2-player online lockstep |
+| **[rebellion-recomp](https://github.com/sp00nznet/rebellion-recomp)** | Star Wars: Rebellion | 1998 | MSVC 5 PE32, DirectDraw 8-bit, Smacker | Boots and plays the intro movie; 34,425 functions, 0 lift errors |
+| **[rogue-squadron-recomp](https://github.com/sp00nznet/rogue-squadron-recomp)** | Star Wars: Rogue Squadron 3D | 1998 | Factor 5 (Win32, DirectDraw/Direct3D 6) | **Flies missions!** 13,331 functions, 0 lift errors; intro, front end and the first mission run |
+| **[nocturne](https://github.com/sp00nznet/nocturne)** | Nocturne | 1999 | Terminal Reality, Watcom C/C++32 | **In game!** Boot, menu, New Game, intro cinematic, then the Stranger under player control in the Spookhouse HQ - 6,276 functions, 0 lift errors, native x64 host, D3D9 renderer |
+| **[tiberiansun-recomp](https://github.com/sp00nznet/tiberiansun-recomp)** | C&C: Tiberian Sun + Firestorm | 1999 | Westwood TS engine (Win32) | **Playable** - 18,559 functions, 0 lift errors; both main menus, skirmishes to 4K, all four campaigns to their first mission; native Linux (win32hle, no Wine); playtest 29 cases, conformance 8/8 |
+| **[mechwarrior3-recomp](https://github.com/sp00nznet/mechwarrior3-recomp)** | MechWarrior 3 | 1999 | Zipper GOS engine (VC6 + MFC42, DirectX 6) | Builds - whole program lifts: 15,930 functions, 0 lift errors, 2.53M lines; host binds all 472 imports; not run yet |
 | **[recoil-recomp](https://github.com/sp00nznet/recoil-recomp)** | Recoil | 1999 | Zipper GOS engine (VC6 + MFC42) | Compiles - 3,490 functions, 0 lift errors, 321K lines, 8/8 TUs build |
-| **[xwa](https://github.com/sp00nznet/xwa)** | X-Wing Alliance | 1999 | Custom (LucasArts) | Active - D3D11 port, concourse UI runs, 2,702 functions |
-| **[sof](https://github.com/sp00nznet/sof)** | Soldier of Fortune | 2000 | Quake II + GHOUL | Active - SDL2 port, 8 subsystems, full maps render |
-| **[gunman](https://github.com/sp00nznet/gunman)** | Gunman Chronicles | 2000 | GoldSrc (Half-Life) | Phase 2 - 3,990 functions, weapons/entities rebuilt |
-| **[redalert2-recomp](https://github.com/sp00nznet/redalert2-recomp)** | C&C: Red Alert 2 + Yuri's Revenge | 2000 | Westwood (Win32) | **Runs natively on Linux** (win32hle) with its Bink movies; a D3D11 presenter (720p-4K, HD voxel units) |
-| **[heavymetal](https://github.com/sp00nznet/heavymetal)** | Heavy Metal: FAKK2 | 2000 | id Tech 3 + UberTools | Foundation - 57 source files, core systems scaffolded |
-| **[crimsonskies](https://github.com/sp00nznet/crimsonskies)** | Crimson Skies | 2000 | Zipper GOS engine | Compiles & links - 6,232 functions, 826K lines, runtime bringup |
+| **[xwa](https://github.com/sp00nznet/xwa)** | X-Wing Alliance | 1999 | Custom (LucasArts) | **In flight!** Alpha, D3D11 - 2,701 functions; frontend and concourse, campaign mission 1 plays end to end (launch, flight, debrief) and mission 2 loads and flies |
+| **[ut99-recomp](https://github.com/sp00nznet/ut99-recomp)** | Unreal Tournament | 1999 | Unreal Engine 1 (Win32, 14 modules) | **Playable!** 38,674 functions, 0 lift errors; DM, CTF and Assault played by hand at 16:9 |
+| **[sof](https://github.com/sp00nznet/sof)** | Soldier of Fortune | 2000 | Quake II + GHOUL | Active - SDL2 port, ~17 subsystems working, full maps render (NYC1) with player movement and HUD; GHOUL models still placeholders |
+| **[gunman](https://github.com/sp00nznet/gunman)** | Gunman Chronicles | 2000 | GoldSrc (Half-Life) | **Playable, fully recompiled!** Alpha - 21,990 functions across 5 modules, 0 lift errors, 3.05M lines; intros, menus, levels, save/load, widescreen to 1280x720 |
+| **[redalert2-recomp](https://github.com/sp00nznet/redalert2-recomp)** | C&C: Red Alert 2 + Yuri's Revenge | 2000 | Westwood (Win32) | **Playable** v0.1.0 - 24,954 + 23,201 functions, 0 lift errors; menus, skirmishes, both campaigns, 720p-4K; native on Windows, Linux and macOS; playtest 30/30 per game |
+| **[heavymetal](https://github.com/sp00nznet/heavymetal)** | Heavy Metal: FAKK2 | 2000 | id Tech 3 + UberTools | Runtime bringup - 4,118 functions, 0 lift errors, ~430K lines; CRT, engine, window and `pak0.pk3` come up, then a fault after 1.44M calls |
+| **[crimsonskies](https://github.com/sp00nznet/crimsonskies)** | Crimson Skies | 2000 | Zipper GOS engine | Runtime bringup - 8,495 functions, ~1.17M lines, 0 lift errors; every GOS subsystem passes and it reaches `dshell` |
 | **[forcecommander](https://github.com/sp00nznet/forcecommander)** | Star Wars: Force Commander | 2000 | LucasArts Ronin engine (MSVC 6) | **In game!** The campaign's briefing room renders in 3D - 39,038 functions, 10.7M lines, 0 lift errors |
-| **[bw](https://github.com/sp00nznet/bw)** | Black & White | 2001 | Lionhead custom | Active - all 569 types done, 10 Hz game loop runs |
+| **[bw](https://github.com/sp00nznet/bw)** | Black & White | 2001 | Lionhead custom | Active - 630 headers / 282 implementations, ~72K lines of C++; the full game loop ticks: Land 1-5 load natively, v1.0 physics, LHVM with 464/465 natives |
 | **[omfbg](https://github.com/sp00nznet/omfbg)** | One Must Fall: Battlegrounds | 2003 | Diversions Entertainment, C++ module DLLs | P0 - 10,374 mangled C++ exports name the engine; SafeDisc covers 1% of the code |
+| **[civ3](https://github.com/sp00nznet/civ3)** | Civilization III: Conquests | 2003 | VC6 PE32 (Steam), jgl.dll GDI renderer | **Plays!** 15,929 functions, 0 lift errors; same state as the original for 19 turns; native Linux on win32hle |
+| **[kotor-recomp](https://github.com/sp00nznet/kotor-recomp)** | Star Wars: Knights of the Old Republic | 2003 | Odyssey engine, Win32 OpenGL 1.x, SteamStub 2.x | **In game!** New game into the Endar Spire; 29,617 functions, 0 lift errors; conformance 11/11 |
 | **[bw2](https://github.com/sp00nznet/bw2)** | Black & White 2 | 2005 | Lionhead custom | P0 partial - `white.exe` (21.7 MB, the largest target yet) not extracted from the discs |
-| **[rol](https://github.com/sp00nznet/rol)** | Rise of Nations: Rise of Legends | 2006 | Big Huge Games rts2 (MSVC 7.1) | Phase 3 - the largest binary this toolchain has faced: 13.25 MB, 25,513 vtable-only functions, no RTTI |
+| **[themovies](https://github.com/sp00nznet/themovies)** | The Movies + Stunts & Effects | 2005 | Lionhead (MSVC, D3D9) | **In game!** 83,468 functions, 0 lift errors; intro, main menu, scripted into a new studio |
+| **[rol](https://github.com/sp00nznet/rol)** | Rise of Nations: Rise of Legends | 2006 | Big Huge Games rts2 (MSVC 7.1) | Boots to the main menu - whole game lifted (70,867 functions, 0 lift errors) and built; intro, first-run dialogs and menu render; Quick Battle setup opens, no match yet |
+| **[tiberiumwars-recomp](https://github.com/sp00nznet/tiberiumwars-recomp)** | Command & Conquer 3: Tiberium Wars | 2007 | EA SAGE (MSVC 2005, SSE, D3D9) | Bring-up - 69,681 functions, 0 lift errors; reaches its D3D9 device, no frame drawn yet |
 
 Every row above links to a repo that is actually there. See
 [docs/PROJECTS.md](docs/PROJECTS.md) for what each one taught the toolbox,
@@ -294,6 +316,19 @@ submodules:
   System ES3 arcade, which is Windows on x86-64. The 64-bit lifter, its runtime
   and difftest64 were written there against Star Wars Battle Pods and merged
   into this repo; see [the 64-bit path](#what-the-64-bit-path-does-that-the-32-bit-one-never-needed).
+- **[gmrecomp](https://github.com/sp00nznet/gmrecomp)** -- GameMaker Studio 1.4
+  `data.win` bytecode to C on an SDL2 runtime. Urban Pirate
+  ([urbanpirate](https://github.com/sp00nznet/urbanpirate)) plays: 1,691 of
+  1,691 code entries lifted.
+- **[netrecomp](https://github.com/sp00nznet/netrecomp)** -- .NET IL to C, built
+  as a drop-in `mono.dll` for Unity 4 games. Shadowrun Returns
+  ([shadowrun-returns-recomp](https://github.com/sp00nznet/shadowrun-returns-recomp))
+  loads a save and plays: 88,867 of 88,868 methods lifted.
+
+Shufflepuck Cafe ([shufflepuck-cafe](https://github.com/sp00nznet/shufflepuck-cafe))
+plays a match on macrecomp. [recomp-launcher](https://github.com/sp00nznet/recomp-launcher)
+is the installer several game repos ship: it finds the game, fetches the repo
+and its toolkit, and runs the repo's setup.
 
 ## Quick Start
 
