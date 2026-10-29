@@ -17,6 +17,9 @@ versions follow [SemVer](https://semver.org/).
   `native32_add_generated` adds a range by hand. SimCity 4's software renderer compiles
   its span loops this way, and through the C-ABI bridge they read 0 for every input.
 - eh32: `NATIVE32_TRACE_EH=1` prints each guest throw and the frame that catches it.
+- win32hle: `GetDiskFreeSpaceExA` reports free and total bytes for mapped
+  guest directories through host `statvfs`, including optional 64-bit outputs.
+  UNC paths and Windows quota semantics remain unsupported.
 - win32hle, for eJay 2's engine and its MFC graphics DLL (sp00nznet/ejay):
   winmm answers as a PC with no mixer and no recording device, and has
   `waveOutSetVolume`, `waveOutGetVolume`, `waveOutGetID` (#135); MFC's
