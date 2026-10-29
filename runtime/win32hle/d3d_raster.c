@@ -378,7 +378,11 @@ static void *worker(void *arg) {
 }
 static void pool(void) {
     if (g_nthreads) return;
+#ifdef __EMSCRIPTEN__
+    long n = 1;                                          /* a browser's worker pool is fixed at load: draw here */
+#else
     long n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
     const char *e = getenv("HLE_D3DTHREADS");
     if (e) n = atol(e);
     if (n < 1) n = 1;
@@ -389,7 +393,6 @@ static void pool(void) {
         pthread_create(&t, NULL, worker, (void *)(intptr_t)(i + 1));
         pthread_detach(t);
     }
-    if (!g_nthreads) g_nthreads = 0;
 }
 
 static int push_state(const rstate_t *st) {
