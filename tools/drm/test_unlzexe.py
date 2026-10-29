@@ -116,5 +116,35 @@ def test():
     print(f'unlzexe: ok ({len(module)}-byte module, {len(got)} relocations)')
 
 
+def test_malformed_input():
+    exe, _, _ = build()
+
+    def rejects(call, label):
+        try:
+            call()
+        except ValueError:
+            return
+        raise AssertionError(f'{label} was accepted')
+
+    rejects(lambda: unlzexe.unpack(exe[:10]), 'truncated MZ header')
+    rejects(lambda: unlzexe.unpack(exe[:0x40]), 'truncated loader')
+    rejects(lambda: unlzexe._Bits(b'\x00', 0), 'truncated bit word')
+    rejects(lambda: unlzexe._relocs90(b'', 0), 'truncated 0.90 relocations')
+    rejects(lambda: unlzexe._relocs91(b'\x00', 0), 'truncated 0.91 relocations')
+
+    # A validly bounded stream can still contain a match before any literal.
+    # Reject it instead of letting Python's negative indexing read arbitrary
+    # bytes from the end of the output buffer.
+    e = _Enc()
+    e.short(-1, 2)
+    stream = e.end()
+    bad = bytearray(exe)
+    bad[0x20:0x40] = stream.ljust(0x20, b'\0')
+    rejects(lambda: unlzexe.unpack(bytes(bad)), 'back-reference before output')
+
+    print('unlzexe malformed inputs: ok')
+
+
 if __name__ == '__main__':
     test()
+    test_malformed_input()

@@ -25,17 +25,22 @@ class _Bits:
     word is fetched as soon as the last bit of the current one is taken, so
     byte reads interleave with it exactly as the loader's do."""
 
-    def __init__(self, data, pos):
+    def __init__(self, data, pos, end=None):
         self.d, self.p = data, pos
+        self.end = len(data) if end is None else end
         self.buf = self._word()
         self.n = 16
 
     def _word(self):
+        if self.p < 0 or self.p + 2 > self.end:
+            raise ValueError('truncated LZEXE bitstream')
         w = self.d[self.p] | (self.d[self.p + 1] << 8)
         self.p += 2
         return w
 
     def byte(self):
+        if self.p < 0 or self.p >= self.end:
+            raise ValueError('truncated LZEXE bitstream')
         b = self.d[self.p]
         self.p += 1
         return b
@@ -54,7 +59,11 @@ def _relocs90(d, pos):
     """0.90: 16 groups (one per 64K frame), each a count then 16-bit offsets."""
     out = []
     for seg in range(16):
+        if pos < 0 or pos + 2 > len(d):
+            raise ValueError('truncated LZEXE 0.90 relocation table')
         n = struct.unpack_from('<H', d, pos)[0]; pos += 2
+        if pos + 2 * n > len(d):
+            raise ValueError('truncated LZEXE 0.90 relocation table')
         for _ in range(n):
             out.append((struct.unpack_from('<H', d, pos)[0], seg * 0x1000)); pos += 2
     return out
@@ -65,8 +74,12 @@ def _relocs91(d, pos):
     escapes to a word span, where 0 means 'advance 0FFF0h bytes' and 1 ends."""
     out, off, seg = [], 0, 0
     while True:
+        if pos < 0 or pos >= len(d):
+            raise ValueError('truncated LZEXE 0.91 relocation table')
         span = d[pos]; pos += 1
         if span == 0:
+            if pos + 2 > len(d):
+                raise ValueError('truncated LZEXE 0.91 relocation table')
             span = struct.unpack_from('<H', d, pos)[0]; pos += 2
             if span == 0:
                 seg += 0x0FFF
@@ -80,19 +93,26 @@ def _relocs91(d, pos):
 
 
 def unpack(data: bytes) -> bytes:
+    if len(data) < 0x20:
+        raise ValueError('truncated MZ/LZEXE header')
     h = list(struct.unpack_from('<14H', data, 0))
     sig = data[0x1C:0x20]
     if h[0] != 0x5A4D or sig not in (b'LZ09', b'LZ91'):
         raise ValueError('not an LZEXE 0.90/0.91 file')
     hdr = h[4] << 4
     ldr = hdr + (h[11] << 4)                       # loader segment = packed CS
+    if hdr < 0x20 or ldr < hdr or ldr + 16 > len(data):
+        raise ValueError('invalid or truncated LZEXE loader segment')
     ip, cs, sp, ss, cparas, grow, ldrsize, _ = struct.unpack_from('<8H', data, ldr)
 
     rel = (_relocs90 if sig == b'LZ09' else _relocs91)(
         data, ldr + (0x19D if sig == b'LZ09' else 0x158))
 
     # The compressed module sits directly below the loader segment.
-    bits = _Bits(data, hdr + ((h[11] - cparas) << 4))
+    compressed = hdr + ((h[11] - cparas) << 4)
+    if cparas > h[11] or compressed < hdr or compressed >= ldr:
+        raise ValueError('invalid LZEXE compressed-module bounds')
+    bits = _Bits(data, compressed, ldr)
     out = bytearray()
     while True:
         if bits.bit():
@@ -113,6 +133,8 @@ def unpack(data: bytes) -> bytes:
                     continue                        # segment boundary, no data
                 n += 1
         for _ in range(n):                          # may overlap: byte by byte
+            if span >= 0 or -span > len(out):
+                raise ValueError('invalid LZEXE back-reference')
             out.append(out[span])
 
     # Header: 1Ch fixed words, the relocation table, padded to 512 bytes.
