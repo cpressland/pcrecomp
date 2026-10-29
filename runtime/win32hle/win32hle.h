@@ -286,6 +286,12 @@ void hle_dd_mode(int *w, int *h, int *bpp);
 extern void (*hle_dd_primary_hook)(void);            /* the primary's pixels or palette changed (a blit, an Unlock, a Flip) */
 int  hle_dd_surface_pixels(uint32_t obj, uint8_t **px, int *w, int *h, int *pitch, int *bpp);   /* 0: not a surface */
 void hle_dsound_set_master(float gain);              /* 0 mutes */
+/* A host's answer to IDirectDrawSurface::QueryInterface for an interface the
+ * surface does not serve itself (a Direct3D texture, a device): the object
+ * (AddRef'd), or 0. */
+extern uint32_t (*hle_dd_surface_qi_hook)(uint32_t surface, const uint8_t *iid);
+/* The same for IDirectDraw::QueryInterface (IDirect3D3, say). */
+extern uint32_t (*hle_dd_qi_hook)(const uint8_t *iid);
 void hle_dsound_register_com(void);                  /* CoCreateInstance(CLSID_DirectSound) (recomp_host_init) */
 /* A host's own sound (a movie's), mixed with the game's buffers: interleaved
  * s16 pushed at its own rate. */

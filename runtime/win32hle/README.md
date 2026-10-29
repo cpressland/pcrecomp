@@ -61,7 +61,8 @@ is written for all of these:
 | `kernel32_crt.c` | what an MSVC CRT asks on its way to `WinMain`: std handles, codepage 1252, locale (the wide calls answer `ERROR_CALL_NOT_IMPLEMENTED`, as on Windows 95), environment, threads |
 | `user32.c` | a window manager without a display: windows, classes, the message queue with `WM_PAINT`/`WM_TIMER` generated, focus/capture/activation, dialogs from templates (modal and not), and the standard controls (button, static, edit, list and combo boxes with owner-draw, trackbar, progress, hotkey) |
 | `gdi32.c`, `gdidc.c` | DIBs and `StretchDIBits` into a framebuffer; device contexts, fonts (TrueType through SDL2_ttf, Liberation for Arial/MS Sans Serif, a game's own through `AddFontResourceA`, smoothed as the font's `gasp` table says, synthetic bold and italic) and `TextOutA` into a surface; DIB sections selected into DCs and blitted between depths, clip rectangles, and the *window surface* a GDI game's window DCs draw into (`hle_gdi_window_surface`) |
-| `ddraw.c` | DirectDraw in software: `IDirectDraw`/`2`, surfaces 1–3 (lock, blit with colour fill, colour key and stretch, flip), palettes, clippers, a virtual display mode |
+| `ddraw.c`, `ddraw_int.h` | DirectDraw in software: `IDirectDraw`/`2`/`4`, surfaces 1–4 (lock, blit with colour fill, colour key and stretch, flip; each surface's own pixel format, z-buffers attached beside the flip chain, mipmap chains), palettes, clippers, a virtual display mode |
+| `d3d.c`, `d3d_raster.c` | DirectX 6's Direct3D: `IDirect3D3` offering one HAL device, `IDirect3DDevice3`, viewports, materials, textures and vertex buffers, drawn by a software rasteriser (perspective-correct, z-buffered, bilinear, colour key, stage-0 texture ops, alpha test and blend, fog) on a thread per core, each owning a band of the screen |
 | `dsound.c` | DirectSound on SDL2 audio: buffers mixed in software at their rate, volume and pan, with play cursors in real time |
 | `bink.c` | `binkw32.dll` on ffmpeg (`HLE_WITH_FFMPEG`): `BinkOpen` on a name or on the game's open file, frames decoded and converted into the game's surface, the soundtrack into a `dsound.c` stream; `BinkBuffer*` for a GDI game, onto the window surface |
 | `mss.c` | the part of Miles (`mss32.dll`) a game's own audio DLL calls: file and memory helpers, and the RIB lookup that hands out an ASI codec, MP3 on ffmpeg |
@@ -96,8 +97,8 @@ What a title still brings:
   these with `win32hle_register` or `hle_com_register_class`.
 
 Not here: guest SEH and C++ exceptions (`RaiseException` ends the run),
-DirectX past DirectDraw 2 and DirectSound 1, and drawing anything through
-GDI but text.
+DirectX past DirectX 6's DirectDraw and Direct3D and DirectSound 1, Direct3D
+lighting and multitexturing, and drawing anything through GDI but text.
 
 ## Building the selftests
 

@@ -148,6 +148,7 @@ static win_t g_win[MAX_WIN];
 static int g_seq;
 
 static uint32_t g_focus, g_capture, g_active;
+static void set_focus(uint32_t h);
 static int g_screen_w = 640, g_screen_h = 480;
 static int g_cursor_x, g_cursor_y, g_cursor_shown = 0;
 static uint8_t g_keys[256];                      /* bit 7: down, bit 0: toggled */
@@ -406,7 +407,13 @@ static uint32_t create_window(uint32_t exstyle, const char *cls, const char *tit
         if (p) hle_send(p->hwnd, 0x0210u, WM_CREATE | (x->id << 16), h);   /* WM_PARENTNOTIFY */
     }
     if (style & WS_VISIBLE) { invalidate(x, 0); hle_send(h, WM_SHOWWINDOW, 1, 0); }
-    if (!x->parent && !g_active && (style & WS_VISIBLE)) g_active = h;
+    /* The first visible top-level window is the active one and, as on
+     * Windows, has the keyboard focus: a game that renders only while
+     * GetFocus() is its window (Theme Park World) draws nothing otherwise. */
+    if (!x->parent && !g_active && (style & WS_VISIBLE)) {
+        g_active = h;
+        if (!g_focus) set_focus(h);
+    }
     return h;
 }
 
