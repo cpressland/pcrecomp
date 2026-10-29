@@ -244,7 +244,7 @@ def push_return_label(insn, nxt, leaders, body=()):
 
 
 def lift_function_linear(lifter, name, instructions, leaders, func_start,
-                         indirect_targets=None, eh_resume=None):
+                         indirect_targets=None, eh_resume=None, alias_entries=None):
     """Lift a linearly-disassembled function to C code.
 
     The preamble comes from `lift32.FUNCTION_LOCALS`, not from a list written
@@ -269,6 +269,12 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
     blocks (eh32.resume_points). Those become labels in the local dispatch and
     the body gets a landing pad (RECOMP_EH_ENTER) that the runtime longjmps to
     on a caught guest throw (runtime/native32/eh32.c).
+
+    `alias_entries`: addresses inside this body that are also entries (catalog
+    aliases). Each gets a label and a case in the local dispatch, and the
+    prologue jumps there when g_alias_entry names it; `alias_stub` writes the
+    entry function that sets it. Lifting each alias as its own body instead
+    copies the rest of this one: on Rise of Legends that was 75% of the C.
     """
     va = func_start & 0xFFFFFFFF
     lines = [f'void {name}(void) {{']
@@ -280,6 +286,10 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
     if eh:
         lines.append('    RECOMP_EH_ENTER();')
         leaders = set(leaders) | set(eh)
+    aliases = sorted(a for a in (alias_entries or ()) if a in {i.address for i in instructions})
+    if aliases:
+        lines.append('    if (g_alias_entry) { _itail_tgt = g_alias_entry; g_alias_entry = 0; goto _ljump; }')
+        leaders = set(leaders) | set(aliases)
     lines.append('')
 
     lifter._flag_state = None
@@ -312,7 +322,7 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
     # TEST_Z of an unrelated `and` just above it (Nocturne's window procedure
     # never saw a WM_CHAR). Forget it there; the jcc reads _flag_k at runtime.
     targets = {t for i in instructions if i.is_jump
-               for t in [i.get_branch_target()] if t is not None} | set(eh)
+               for t in [i.get_branch_target()] if t is not None} | set(eh) | set(aliases)
 
     # A gap inside the body: instruction k can fall through, but the next one
     # emitted is not at its end, because the extent walk stopped there (a
@@ -390,7 +400,7 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
     defined = sorted(set(re.findall(r'(?m)^\s*(L_[0-9A-Fa-f]{8})\s*:', body)))
     indirect = [i for i, l in enumerate(lines)
                 if 'RECOMP_ITAIL(' in l and 'RECOMP_ITAIL(0x' not in l]
-    if (indirect or eh) and defined:
+    if (indirect or eh or aliases) and defined:
         for i in indirect:
             m = re.search(r'RECOMP_ITAIL\((.+?)\);\s*return;', lines[i])
             if m:
@@ -400,7 +410,7 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
         lines.append('    switch (_itail_tgt) {')
         cases = ([] if not indirect else defined if indirect_targets is None else
                  [lbl for lbl in defined if int(lbl[2:], 16) in indirect_targets])
-        cases = sorted(set(cases) | {f'L_{a:08X}' for a in eh})
+        cases = sorted(set(cases) | {f'L_{a:08X}' for a in eh} | {f'L_{a:08X}' for a in aliases})
         for lbl in cases:
             lines.append(f'      case 0x{int(lbl[2:], 16):08X}u: goto {lbl};')
         lines.append('      default: RECOMP_ITAIL(_itail_tgt); return;')
@@ -420,6 +430,14 @@ def lift_function_linear(lifter, name, instructions, leaders, func_start,
     out = re.sub(r'\breturn;', '{ %sRECOMP_REGS_OUT(); return; }' % leave, '\n'.join(lines))
     return re.sub(r'CMP_(\w+)\(_fpu_cmp\)',
                   lambda m: f'((_fpu_cmp) {FPU_CMP.get(m.group(1), "==")} 0)', out)
+
+
+def alias_stub(name, va, parent):
+    """The entry function for an alias whose code lifts inside `parent`
+    (lift_function_linear's alias_entries): enter the parent at `va`. The
+    alias was reached by a call or a dispatch like any entry, so this is a
+    plain C call, and the parent's `ret` on that path is the alias's own."""
+    return 'void %s(void) { g_alias_entry = 0x%08Xu; %s(); }\n' % (name, va & 0xFFFFFFFF, parent)
 
 
 def write_chunk(output_dir, file_idx, funcs):
