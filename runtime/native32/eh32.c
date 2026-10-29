@@ -155,6 +155,14 @@ static void bind_catch_object(uint32_t handler, uint32_t ct, uint32_t obj, uint3
     }
 }
 
+/* NATIVE32_TRACE_EH=1: one line per guest throw, and where it lands. */
+static int eh_trace = -1;
+
+static const char* throw_type(uint32_t info) {
+    uint32_t arr = info ? MEM32(info + 12) : 0;
+    return arr && MEM32(arr) ? (const char*)(uintptr_t)(MEM32(MEM32(MEM32(arr + 4) + 4)) + 8) : "?";
+}
+
 static int dispatch(uint32_t obj, uint32_t info) {
     uint32_t top = MEM32(g_fs_base);
     for (uint32_t rec = top; rec && rec != 0xFFFFFFFFu; rec = MEM32(rec)) {
@@ -172,6 +180,9 @@ static int dispatch(uint32_t obj, uint32_t info) {
                 uint32_t type = MEM32(h + 4);
                 uint32_t ct = type ? catchable(info, type) : 0;
                 if (type && !ct) continue;
+                if (eh_trace)
+                    fprintf(stderr, "[eh32] %s caught by the frame at 0x%08X (catch funclet 0x%08X)\n",
+                            throw_type(info), rec + 12, MEM32(h + 12));
                 /* Caught: unwind everything above, then this frame to the try. */
                 for (uint32_t r = top; r != rec; r = MEM32(r)) {
                     uint32_t f = funcinfo(MEM32(r + 4));
@@ -211,10 +222,15 @@ typedef void (__stdcall *cxx_throw_t)(void*, void*);
 /* _CxxThrowException(object, ThrowInfo), stdcall, in the lifted model. */
 void native32_shim_CxxThrowException(void) {
     uint32_t obj = MEM32(g_esp + 4), info = MEM32(g_esp + 8);
+    if (eh_trace < 0) eh_trace = getenv("NATIVE32_TRACE_EH") != NULL;
+    if (eh_trace)
+        fprintf(stderr, "[eh32] %s 0x%08X from sub_%08X%s\n", info ? "throw" : "rethrow",
+                info ? obj : t_cur_obj, g_cur_func, !info && !t_cur_info ? " with no exception active" : "");
     if (!info) obj = t_cur_obj, info = t_cur_info;          /* `throw;` */
     g_esp += 4;                                             /* the call's return address */
     if (info) dispatch(obj, info);
     /* Nothing in the guest catches it: the host's crash report does. */
+    if (eh_trace) fprintf(stderr, "[eh32] %s: no guest frame catches it\n", throw_type(info));
     static cxx_throw_t real;
     if (!real) real = (cxx_throw_t)GetProcAddress(LoadLibraryA("msvcrt.dll"), "_CxxThrowException");
     real((void*)(uintptr_t)obj, (void*)(uintptr_t)info);

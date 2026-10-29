@@ -220,6 +220,39 @@ int main(void) {
         recomp_eh_pop(&outer);
     }
 
+    /* Code the guest generates: entered with its registers, not the C ABI.
+     * Inputs in esi, edi, a stack argument and mm1; outputs in eax, ebx and
+     * mm1; `ret 4` pops its argument. ebp is changed and must come back to
+     * the guest, not the host. */
+    {
+        static const uint8_t gen[] = {
+            0x89, 0xF0,                     /* mov eax, esi          */
+            0x01, 0xF8,                     /* add eax, edi          */
+            0x03, 0x44, 0x24, 0x04,         /* add eax, [esp+4]      */
+            0x0F, 0x7E, 0xC9,               /* movd ecx, mm1         */
+            0x01, 0xC8,                     /* add eax, ecx          */
+            0xBB, 0x34, 0x12, 0x00, 0x00,   /* mov ebx, 0x1234       */
+            0xBD, 0x78, 0x56, 0x00, 0x00,   /* mov ebp, 0x5678       */
+            0x0F, 0xFE, 0xC9,               /* paddd mm1, mm1        */
+            0xC2, 0x04, 0x00,               /* ret 4                 */
+        };
+        uint8_t* code = (uint8_t*)VirtualAlloc(NULL, 4096, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        memcpy(code, gen, sizeof gen);
+        uint32_t va = (uint32_t)(uintptr_t)code, after, arg = 1000;
+        CHECK(!native32_is_generated(va));
+        CHECK(recomp_lookup_import(va) != NULL);         /* before: an ordinary native call */
+        native32_add_generated(va, 4096);
+        CHECK(native32_is_generated(va + 100) && !native32_is_generated(va + 4096));
+        uint32_t ebp0 = g_ebp, esp0 = g_esp;
+        g_esi = 1; g_edi = 20; g_mm[1] = 300; g_ebx = 0;
+        uint32_t eax = call(code, 1, &arg, &after);
+        CHECK(eax == 1321);
+        CHECK(g_ebx == 0x1234 && g_ebp == 0x5678 && g_mm[1] == 600);
+        CHECK(after == esp0);                            /* ret 4: the callee popped its argument */
+        g_ebp = ebp0;
+        VirtualFree(code, 0, MEM_RELEASE);
+    }
+
     printf("native32 selftest: %s\n", fails ? "FAILED" : "ok");
     return fails != 0;
 }

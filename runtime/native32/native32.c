@@ -562,6 +562,139 @@ recomp_func_t recomp_lookup(uint32_t va) {
     return dispatch_find(va);
 }
 
+/* ------------------------------------------------ code the guest generates
+ *
+ * A guest that writes machine code at run time (SimCity 4's software
+ * renderer compiles its span loops into a VirtualAlloc'd PAGE_EXECUTE_READWRITE
+ * buffer, 0x008EC050) cannot have it lifted. It runs natively, but not
+ * through native_bridge: that one is for the C ABI (stack arguments, ecx),
+ * and generated code takes its inputs wherever the generator put them --
+ * esi/edi/ebp pointers and MMX registers set up by the hand-written caller
+ * (0x008DD8B0). Through native_bridge it read 0 for each. So these calls get
+ * the whole register file, on the guest's stack, the way the original call
+ * instruction would have left it. */
+#define MAX_GEN 64
+static struct { uint32_t lo, hi; } g_gen[MAX_GEN];
+static volatile LONG g_gen_n;
+
+int native32_is_generated(uint32_t va) {
+    LONG n = g_gen_n < MAX_GEN ? g_gen_n : MAX_GEN;
+    for (LONG i = 0; i < n; i++)
+        if (va >= g_gen[i].lo && va < g_gen[i].hi) return 1;
+    return 0;
+}
+
+void native32_add_generated(uint32_t lo, uint32_t size) {
+    if (!size || (native32_is_generated(lo) && native32_is_generated(lo + size - 1))) return;
+    LONG i = InterlockedIncrement(&g_gen_n) - 1;
+    if (i >= MAX_GEN) {
+        InterlockedDecrement(&g_gen_n);
+        fprintf(stderr, "[native32] more than %d generated-code ranges: 0x%08X+0x%X not added\n", MAX_GEN, lo, size);
+        return;
+    }
+    g_gen[i].hi = lo + size;
+    g_gen[i].lo = lo;
+    if (getenv("NATIVE32_LOG_THREADS") || native32_trace_native)
+        fprintf(stderr, "[native32] generated code at 0x%08X+0x%X runs natively\n", lo, size);
+}
+
+/* Field offsets are used by the asm below: fn, in[8], mm, out[8]. */
+typedef struct {
+    uint32_t fn;
+    uint32_t in[8];     /* eax ecx edx ebx esp ebp esi edi; esp already past the dummy ret */
+    uint32_t mm;        /* &g_mm */
+    uint32_t out[8];
+} gen_ctx_t;
+
+/* Entered by `call` on the guest's stack with edi = the context: loads the
+ * guest registers and returns into the target, so the target finds its
+ * return address at [esp], exactly where the original call put it. */
+static __declspec(naked) void gen_enter(void) {
+    __asm {
+        push dword ptr [edi]
+        mov  eax, [edi + 4]
+        mov  ecx, [edi + 8]
+        mov  edx, [edi + 12]
+        mov  ebx, [edi + 16]
+        mov  ebp, [edi + 24]
+        mov  esi, [edi + 28]
+        mov  edi, [edi + 32]
+        ret
+    }
+}
+
+static void gen_bridge(void) {
+    gen_ctx_t c;
+    gen_ctx_t* cp = &c;
+    const char* saved_import = g_cur_import;
+    c.fn = g_native_target;
+    c.in[0] = g_eax; c.in[1] = g_ecx; c.in[2] = g_edx; c.in[3] = g_ebx;
+    c.in[4] = g_esp + 4; c.in[5] = g_ebp; c.in[6] = g_esi; c.in[7] = g_edi;
+    c.mm = (uint32_t)(uintptr_t)g_mm;
+    if (native32_trace_native)
+        fprintf(stderr, "[native] generated code @%08X from sub_%08X (esi %08X edi %08X ebp %08X)\n",
+                c.fn, g_cur_func, g_esi, g_edi, g_ebp);
+    g_cur_import = "(generated code)";
+    /* As in native_bridge: the context pointer is in a register before esp
+     * moves, every host register the compiler may rely on is saved, and the
+     * anchor back to this frame is the TEB's ArbitraryUserPointer. The machine
+     * lock stays held: this is guest code. */
+    __asm {
+        mov  eax, cp
+        push edi
+        push ebp
+        push esi
+        push ebx
+        push eax                     ; the context, for after the call
+        push dword ptr fs:[0x14]
+        mov  fs:[0x14], esp
+        mov  edi, eax
+        mov  eax, [edi + 36]
+        movq mm0, qword ptr [eax]
+        movq mm1, qword ptr [eax + 8]
+        movq mm2, qword ptr [eax + 16]
+        movq mm3, qword ptr [eax + 24]
+        movq mm4, qword ptr [eax + 32]
+        movq mm5, qword ptr [eax + 40]
+        movq mm6, qword ptr [eax + 48]
+        movq mm7, qword ptr [eax + 56]
+        mov  esp, [edi + 20]         ; the guest's stack
+        call gen_enter
+        push eax
+        mov  eax, fs:[0x14]
+        mov  eax, [eax + 4]          ; the context
+        mov  [eax + 44], ecx
+        mov  [eax + 48], edx
+        mov  [eax + 52], ebx
+        mov  [eax + 60], ebp
+        mov  [eax + 64], esi
+        mov  [eax + 68], edi
+        pop  ecx
+        mov  [eax + 40], ecx
+        mov  [eax + 56], esp
+        mov  ecx, [eax + 36]
+        movq qword ptr [ecx], mm0
+        movq qword ptr [ecx + 8], mm1
+        movq qword ptr [ecx + 16], mm2
+        movq qword ptr [ecx + 24], mm3
+        movq qword ptr [ecx + 32], mm4
+        movq qword ptr [ecx + 40], mm5
+        movq qword ptr [ecx + 48], mm6
+        movq qword ptr [ecx + 56], mm7
+        emms                         ; the host's x87 is usable again
+        mov  esp, fs:[0x14]
+        pop  dword ptr fs:[0x14]
+        add  esp, 4
+        pop  ebx
+        pop  esi
+        pop  ebp
+        pop  edi
+    }
+    g_eax = c.out[0]; g_ecx = c.out[1]; g_edx = c.out[2]; g_ebx = c.out[3];
+    g_esp = c.out[4]; g_ebp = c.out[5]; g_esi = c.out[6]; g_edi = c.out[7];
+    g_cur_import = saved_import;
+}
+
 /* Anything that is neither a shim nor inside a guest module is native: an
  * import, a GetProcAddress result, a COM method. */
 recomp_func_t recomp_lookup_import(uint32_t va) {
@@ -573,7 +706,7 @@ recomp_func_t recomp_lookup_import(uint32_t va) {
     if (va < 0x10000u) return NULL;
     if (native32_in_guest(va) && !native_module_at(va) && !data_section_code(va)) return NULL;
     g_native_target = va;
-    return native_bridge;
+    return native32_is_generated(va) ? gen_bridge : native_bridge;
 }
 
 /* Built-in shims every host gets, ahead of its own.
@@ -680,6 +813,18 @@ static void shim_VirtualProtect(void) {
         }
     }
     g_eax = VirtualProtect((void*)(uintptr_t)a[0], a[1], prot, (PDWORD)(uintptr_t)a[3]);
+    if (g_eax && (prot & 0xF0) && !native32_in_guest(lo))   /* PAGE_EXECUTE*: code it wrote */
+        native32_add_generated(lo, a[1]);
+    g_esp += 4 + 4 * 4;
+}
+
+/* VirtualAlloc with an execute protection outside the guest's modules is a
+ * buffer for code the guest is about to write: calls into it run natively,
+ * with the guest's registers (gen_bridge). */
+static void shim_VirtualAlloc(void) {
+    uint32_t* a = (uint32_t*)(uintptr_t)(g_esp + 4);
+    g_eax = (uint32_t)(uintptr_t)VirtualAlloc((void*)(uintptr_t)a[0], a[1], a[2], a[3]);
+    if (g_eax && (a[3] & 0xF0)) native32_add_generated(g_eax, a[1]);
     g_esp += 4 + 4 * 4;
 }
 
@@ -707,6 +852,7 @@ static native32_shim_t g_builtin[] = {
     { "RaiseException", shim_RaiseException },
     { "TerminateThread", shim_TerminateThread },
     { "VirtualProtect", shim_VirtualProtect },
+    { "VirtualAlloc", shim_VirtualAlloc },
     { "_CxxThrowException", native32_shim_CxxThrowException },
     { "_ftol", native32_shim_ftol },
     { "_CIsqrt", native32_shim_CIsqrt }, { "_CIsin", native32_shim_CIsin },

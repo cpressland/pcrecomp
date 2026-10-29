@@ -100,6 +100,16 @@ int native32_set_native(uint32_t base);
  * lifted entries (the rest are skipped). */
 int native32_lift_in_native(const uint32_t* vas, int n);
 
+/* Code the guest writes at run time (a software renderer compiling its span
+ * loops) cannot be lifted, so it runs natively, and it is entered with the
+ * guest's whole register file, not the C ABI: eax..edi, ebp and the MMX
+ * registers are loaded before the call and read back after, on the guest's
+ * own stack. Memory the guest makes executable outside its modules
+ * (VirtualAlloc or VirtualProtect with an execute protection) is registered
+ * by the built-in shims; a host can add a range itself. */
+void native32_add_generated(uint32_t lo, uint32_t size);
+int native32_is_generated(uint32_t va);
+
 /* Diagnostics: set before running. */
 extern int native32_trace_native;     /* one line per native call */
 extern int native32_trace_callbacks;  /* one line per Windows -> guest call */
