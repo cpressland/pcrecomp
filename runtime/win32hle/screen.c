@@ -699,6 +699,8 @@ static void confine_update(void) {
     if (want == held && (!want || !memcmp(&r, &at, sizeof r))) return;
     SDL_SetWindowMouseRect(g_win, want ? &r : NULL);
     SDL_SetWindowMouseGrab(g_win, want ? SDL_TRUE : SDL_FALSE);
+    if (want) fprintf(stderr, "[screen] mouse held in the picture: %dx%d at %d,%d\n", r.w, r.h, r.x, r.y);
+    else fprintf(stderr, "[screen] mouse let go\n");
     held = want, at = r;
 #endif
 }
