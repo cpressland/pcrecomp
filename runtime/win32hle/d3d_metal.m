@@ -641,11 +641,27 @@ static void m_sync(void) {
         }
     }
 }
-/* Downloads that are done, into memory, waiting for none: the presenter is
- * about to show the primary. */
-static void m_frame(void) {
+/* ---- what the presenter shows ----
+ * Each flip starts the new front's picture down into one of three buffers,
+ * and the presenter shows the one the flip before started, which is there by
+ * then: every frame shown once, in step with the flips, and the game never
+ * waits for the GPU. With none on its way (the first flip, or one after a
+ * flip of pixels from memory), the flip waits for its own. The front stays newer on the GPU than in memory until
+ * DirectDraw touches it. */
+#define RING 3
+static id<MTLBuffer> g_ring[RING];
+static id<MTLCommandBuffer> g_ring_cb[RING];
+static int g_show = -1, g_coming = -1;                            /* ring entries: shown, on its way */
+static int g_show_new;                                            /* not yet seen by the presenter */
+static uint32_t g_show_gen, g_flip_ms;
+static surf_t *g_show_s;                                          /* the primary they are of */
+static void show_none(void) { g_show = g_coming = -1, g_show_s = NULL; }
+
+/* The frame to show for the primary, or NULL for its own pixels. Also
+ * finishes downloads that are done, waiting for none. */
+static const uint8_t *m_frame(surf_t *p) {
     static int busy;
-    if (busy) return;
+    if (busy) return NULL;
     busy = 1;
     for (int i = 0; i < g_ndirty; i++) {
         grec_t *r = g_dirty[i];
@@ -655,6 +671,41 @@ static void m_frame(void) {
         }
     }
     busy = 0;
+    if (g_show < 0 || p != g_show_s) return NULL;
+    if (g_show_new) g_show_new = 0, g_show_gen = p->gen;  /* the flip's own mark: from here, any other is a change */
+    else if (p->gen != g_show_gen) { show_none(); return NULL; }   /* written since, in memory */
+    /* The game has stopped flipping: its last frame, once it is down. */
+    if (g_coming >= 0 && g_coming != g_show && hle_ticks_ms() - g_flip_ms > 100 &&
+        g_ring_cb[g_coming].status >= MTLCommandBufferStatusCompleted) g_show = g_coming;
+    return (const uint8_t *)g_ring[g_show].contents;
+}
+static void show_flip(grec_t *r) {
+    gpk_t k;
+    if (!fmt_of(r->s, &k)) { show_none(); return; }
+    if (g_coming >= 0) {
+        [g_ring_cb[g_coming] waitUntilCompleted];        /* started a frame ago: done by now */
+        g_show = g_coming, g_show_s = r->s;
+    }
+    g_show_new = 1;                                      /* this flip's mark is not a change */
+    int i = 0;
+    while (i == g_show) i++;
+    NSUInteger n = (NSUInteger)r->s->pitch * (NSUInteger)r->s->h;
+    if (!g_ring[i] || g_ring[i].length < n) {
+        [g_ring[i] release];
+        g_ring[i] = [g_dev newBufferWithLength:n options:MTLResourceStorageModeShared];
+    }
+    end_pass();
+    dispatch(g_pack, r->color, g_ring[i], &k);
+    commit(0);
+    [g_ring_cb[i] release];
+    g_ring_cb[i] = [g_last retain];
+    g_flip_ms = hle_ticks_ms();
+    if (g_show < 0 || g_show_s != r->s) {               /* nothing to show yet (memory's pixels are older): this one, now */
+        [g_ring_cb[i] waitUntilCompleted];
+        g_show = i, g_show_s = r->s, g_coming = -1;
+        return;
+    }
+    g_coming = i;
 }
 static void m_end_scene(surf_t *t) {
     @autoreleasepool {
@@ -668,6 +719,7 @@ static void m_end_scene(surf_t *t) {
 /* ---- DirectDraw's side ---- */
 static void m_free(surf_t *s) {
     @autoreleasepool { flush_batch(); }                  /* a batch may draw with it */
+    if (s == g_show_s) show_none();
     grec_t *r = (grec_t *)s->gpu;
     if (!r) return;
     forget_dirty(r);
@@ -680,17 +732,18 @@ static void m_free(surf_t *s) {
 }
 /* The pixels changed places: the records follow them, each still as far
  * ahead of or behind its pixels as it was. The new front's picture starts
- * down to memory for the presenter, without waiting. */
+ * down for the presenter. */
 static void m_flip(surf_t *front, surf_t *back) {
     grec_t *f = (grec_t *)front->gpu, *b = (grec_t *)back->gpu;
-    /* Flip marked the front (gen + 1) before calling here. */
-    int f_ok = f && !f->stale && f->gen == front->gen - 1, b_ok = b && !b->stale && b->gen == back->gen;
+    int f_ok = f && !f->stale && f->gen == front->gen, b_ok = b && !b->stale && b->gen == back->gen;
     @autoreleasepool { flush_batch(); end_pass(); }
     front->gpu = b, back->gpu = f;
-    /* Newer on the GPU is never also newer in memory. */
-    if (b) b->s = front, b->gen = front->gen, b->stale = !b_ok && !b->dirty;
+    /* Newer on the GPU is never also newer in memory. Flip marks the front
+     * (gen + 1) after this. */
+    if (b) b->s = front, b->gen = front->gen + 1, b->stale = !b_ok && !b->dirty;
     if (f) f->s = back, f->gen = back->gen, f->stale = !f_ok && !f->dirty;
-    if (b && b->dirty) @autoreleasepool { start_download(b); commit(0); }
+    if (b && b->dirty) @autoreleasepool { show_flip(b); }
+    else show_none();
 }
 /* A blit on the GPU, when either end has newer pixels there: the
  * destination becomes the GPU's. Not for a surface onto itself, nor
