@@ -39,11 +39,12 @@ extern void (*hle_dd_free_hook)(surf_t *s);
 extern void (*hle_dd_flip_hook)(surf_t *front, surf_t *back);
 /* ...and, set by one, hears of each surface DirectDraw is about to read or
  * write (to bring its pixels into memory first); may do a blit itself
- * (returning 1); and may finish a frame the presenter is about to show. */
+ * (returning 1); and may give the presenter the pixels of the primary to
+ * show, when it has them nearer to hand than the primary's memory. */
 extern void (*hle_dd_sync_hook)(surf_t *s);
 extern int (*hle_dd_blit_hook)(surf_t *d, int dl, int dt, int dr, int db, surf_t *s, int sl, int st, int sr, int sb,
                                int keyed, uint32_t klo, uint32_t khi);
-extern void (*hle_dd_frame_hook)(void);
+extern const uint8_t *(*hle_dd_frame_hook)(surf_t *primary);   /* NULL: the primary's own pixels */
 /* Tell the presenter a surface changed (it shows the primary). */
 void hle_dd_mark(surf_t *s);
 

@@ -83,6 +83,8 @@ static surf_t *g_primary;
 static uint32_t g_vt_dd, g_vt_dd2, g_vt_dd4, g_vt_surf, g_vt_pal, g_vt_clip;
 static uint32_t g_dd, g_dd2, g_dd4;                      /* the one DirectDraw object, all three faces */
 static volatile unsigned g_frame_seq;                    /* bumped when the primary may have changed */
+static int g_flipping;                                   /* marking the primary for a Flip */
+int hle_dd_flipping(void) { return g_flipping; }
 
 /* Hooks for Direct3D's renderer (d3d.c, ddraw_int.h): ACCESS before DirectDraw
  * reads or writes any surface, TOUCH for each one it does. */
@@ -90,7 +92,7 @@ void (*hle_dd_access_hook)(void);
 void (*hle_dd_sync_hook)(surf_t *s);
 int (*hle_dd_blit_hook)(surf_t *d, int dl, int dt, int dr, int db, surf_t *s, int sl, int st, int sr, int sb,
                         int keyed, uint32_t klo, uint32_t khi);
-void (*hle_dd_frame_hook)(void);
+const uint8_t *(*hle_dd_frame_hook)(surf_t *primary);
 #define ACCESS() do { if (hle_dd_access_hook) hle_dd_access_hook(); } while (0)
 #define TOUCH(s) do { if (hle_dd_sync_hook && (s)) hle_dd_sync_hook(s); } while (0)
 
@@ -102,10 +104,10 @@ void (*hle_dd_frame_hook)(void);
 /* What the presenter shows: the primary's pixels and their format. 0 if
  * there is no primary yet. */
 int hle_dd_frame(const uint8_t **px, int *w, int *h, int *pitch, int *bpp, const uint32_t **palette, unsigned *seq) {
-    if (hle_dd_frame_hook) hle_dd_frame_hook();
     surf_t *s = g_primary;
     if (!s) return 0;
-    *px = s->px, *w = s->w, *h = s->h, *pitch = s->pitch, *bpp = s->bpp;
+    const uint8_t *shown = hle_dd_frame_hook ? hle_dd_frame_hook(s) : NULL;
+    *px = shown ? shown : s->px, *w = s->w, *h = s->h, *pitch = s->pitch, *bpp = s->bpp;
     *palette = s->palette ? P(s->palette)->entries : NULL;
     if (seq) *seq = g_frame_seq;
     return 1;
@@ -600,8 +602,10 @@ static void sf_Flip(void) {                              /* (this, target, flags
     if (s->back) {
         uint8_t *t = s->px;
         s->px = s->back->px, s->back->px = t;
-        mark(s);
         if (hle_dd_flip_hook) hle_dd_flip_hook(s, s->back);
+        g_flipping = 1;                                  /* the presenter shows every flip (screen.c) */
+        mark(s);
+        g_flipping = 0;
     }
     RET(DD_OK, 3);
 }
