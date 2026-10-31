@@ -749,6 +749,14 @@ static SDL_Rect to_points(SDL_Rect r) {
  * in the window takes it back. A host turns it off with hle_screen_confine. */
 static int g_confine = 1, g_released, g_regrab_up;
 void hle_screen_confine(int on) { g_confine = on != 0; }
+/* A game holding the mouse for its movement alone (dinput.c): while the
+ * mouse is held, the window gives that (SDL's relative mode), so the game's
+ * cursor goes on where the desktop's pointer would stop at the edge. */
+static int g_want_rel, g_rel;
+static double g_rel_fx, g_rel_fy;                          /* game pixels not yet whole */
+static void want_relative(int on) { g_want_rel = on; }
+static void warp(int x, int y);
+static void warp_to_cursor(void) { int x, y; hle_input_position(&x, &y); warp(x, y); }
 static void confine_update(void) {
 #if !defined(__EMSCRIPTEN__) && SDL_VERSION_ATLEAST(2, 0, 18)
     static int held;
@@ -757,6 +765,13 @@ static void confine_update(void) {
     int want = g_confine && !g_released && !g_menu_depth && g_dst.w > 0 && g_dst.h > 0
                && (SDL_GetWindowFlags(g_win) & SDL_WINDOW_INPUT_FOCUS);
     SDL_Rect r = want ? to_points(g_dst) : (SDL_Rect){ 0, 0, 0, 0 };
+    int rel = want && g_want_rel;
+    if (rel != g_rel) {
+        SDL_SetRelativeMouseMode(rel ? SDL_TRUE : SDL_FALSE);
+        g_rel = rel, g_rel_fx = g_rel_fy = 0;
+        if (!rel && want) warp_to_cursor();              /* the desktop's pointer where the game's cursor is */
+        fprintf(stderr, "[screen] mouse %s\n", rel ? "relative: the game has its movement" : "absolute");
+    }
     if (want == held && (!want || !memcmp(&r, &at, sizeof r))) return;
     SDL_SetWindowMouseRect(g_win, want ? &r : NULL);
     SDL_SetWindowMouseGrab(g_win, want ? SDL_TRUE : SDL_FALSE);
@@ -822,6 +837,17 @@ void hle_screen_pump(void) {
             break;
         }
         case SDL_MOUSEMOTION: {
+            if (g_rel) {                                 /* movement alone, in game pixels as the picture shows them */
+                SDL_Rect pd = to_points(g_dst);
+                int w = g_src_w, h = g_src_h, bpp;
+                if (w <= 0 || h <= 0) hle_dd_mode(&w, &h, &bpp);
+                if (pd.w <= 0 || pd.h <= 0) break;
+                g_rel_fx += (double)e.motion.xrel * w / pd.w, g_rel_fy += (double)e.motion.yrel * h / pd.h;
+                int dx = (int)g_rel_fx, dy = (int)g_rel_fy;
+                g_rel_fx -= dx, g_rel_fy -= dy;
+                if (dx || dy) hle_input_motion(dx, dy);
+                break;
+            }
             int gx, gy;
             to_game(e.motion.x, e.motion.y, &gx, &gy);
             hle_input_mouse(WM_MOUSEMOVE, gx, gy);
@@ -834,7 +860,8 @@ void hle_screen_pump(void) {
             }
             if (g_regrab_up && e.type == SDL_MOUSEBUTTONUP) { g_regrab_up = 0; break; }
             int gx, gy, down = e.type == SDL_MOUSEBUTTONDOWN;
-            to_game(e.button.x, e.button.y, &gx, &gy);
+            if (g_rel) hle_input_position(&gx, &gy);       /* where the movement has put the cursor */
+            else to_game(e.button.x, e.button.y, &gx, &gy);
             uint32_t m = e.button.button == SDL_BUTTON_RIGHT ? (down ? WM_RBUTTONDOWN : WM_RBUTTONUP)
                        : e.button.button == SDL_BUTTON_MIDDLE ? (down ? WM_MBUTTONDOWN : WM_MBUTTONUP)
                        : (down ? WM_LBUTTONDOWN : WM_LBUTTONUP);
@@ -858,7 +885,7 @@ static void present_gdi(void) { present(0); }
 static void warp(int x, int y) {
     int w, h, bpp;
     hle_dd_mode(&w, &h, &bpp);
-    if (!g_win || !g_ren || g_dst.w <= 0 || w <= 0 || h <= 0) return;
+    if (!g_win || !g_ren || g_rel || g_dst.w <= 0 || w <= 0 || h <= 0) return;   /* relative: there is no pointer to move */
     SDL_Rect p = to_points((SDL_Rect){ g_dst.x + x * g_dst.w / w, g_dst.y + y * g_dst.h / h, 0, 0 });
     SDL_WarpMouseInWindow(g_win, p.x, p.y);
 }
@@ -881,6 +908,7 @@ static void primary_changed(void) {
 int hle_screen_open(const char *title, int fullscreen, int headless) {
     g_headless = headless, g_fullscreen = fullscreen;
     hle_set_pump_hook(hle_screen_pump);
+    hle_input_relative_hook = want_relative;
     hle_gdi_window_hook = present_gdi;                   /* a GDI game's blit shows, pumping or not (a loading bar) */
     if (headless) return 0;
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");      /* SIGINT and SIGTERM end the process: SDL would make them a close the game can refuse */
