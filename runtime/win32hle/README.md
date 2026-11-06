@@ -72,6 +72,7 @@ is written for all of these:
 | `gdi32.c`, `gdidc.c` | DIBs and `StretchDIBits` into a framebuffer; device contexts, fonts (TrueType through SDL2_ttf, Liberation for Arial/MS Sans Serif, a game's own through `AddFontResourceA`, smoothed as the font's `gasp` table says, synthetic bold and italic) and `TextOutA` into a surface; DIB sections selected into DCs and blitted between depths, clip rectangles, and the *window surface* a GDI game's window DCs draw into (`hle_gdi_window_surface`) |
 | `ddraw.c`, `ddraw_int.h` | DirectDraw in software: `IDirectDraw`/`2`/`4`, surfaces 1–4 (lock, blit with colour fill, colour key and stretch, flip; each surface's own pixel format, z-buffers attached beside the flip chain, mipmap chains), palettes, clippers, a virtual display mode |
 | `d3d.c`, `d3d_raster.c` | DirectX 6's Direct3D: `IDirect3D3` offering one HAL device, `IDirect3DDevice3`, viewports, materials, textures and vertex buffers, drawn by a software rasteriser (perspective-correct, z-buffered, bilinear, colour key, stage-0 texture ops, alpha test and blend, fog) on a thread per core, each owning a band of the screen |
+| `eh32.c` | guest C++ exceptions (MSVC frame-based EH): `_CxxThrowException` (`hle_eh_throw`, `win32hle_eh32`) dispatched from the guest's own fs:[0] chain and FuncInfo to its catch blocks, unwinding as it goes, then into the catching function's landing pad (`tools/lift/eh32.py`); native32's `eh32.c` on guest memory |
 | `dsound.c` | DirectSound on SDL2 audio: buffers mixed in software at their rate, volume and pan, with play cursors in real time |
 | `bink.c` | `binkw32.dll` on ffmpeg (`HLE_WITH_FFMPEG`): `BinkOpen` on a name or on the game's open file, frames decoded and converted into the game's surface, the soundtrack into a `dsound.c` stream; `BinkBuffer*` for a GDI game, onto the window surface |
 | `mss.c` | the part of Miles (`mss32.dll`) a game's own audio DLL calls: file and memory helpers, and the RIB lookup that hands out an ASI codec, MP3 on ffmpeg |
@@ -111,7 +112,7 @@ What a title still brings:
   Blowfish cipher, a COM server in the game folder), registered ahead of
   these with `win32hle_register` or `hle_com_register_class`.
 
-Not here: guest SEH and C++ exceptions (`RaiseException` ends the run),
+Not here: guest SEH (`__try`/`__except`; `RaiseException` ends the run),
 DirectX past DirectX 6's DirectDraw and Direct3D and DirectSound 1, Direct3D
 lighting and multitexturing, and drawing anything through GDI but text.
 
