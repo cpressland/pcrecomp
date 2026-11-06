@@ -12,6 +12,17 @@
  *
  * With no audio device (SDL_AUDIODRIVER=dummy, a headless box) SDL's dummy
  * driver still runs the callback in real time, so the cursors still move.
+ *
+ * DirectSound 3D: a buffer made with DSBCAPS_CTRL3D answers
+ * IDirectSound3DBuffer, and the primary buffer IDirectSound3DListener. Such
+ * a buffer is placed, not panned: its gain is its volume times DirectSound's
+ * distance rolloff from the listener (full inside the minimum distance,
+ * min / (min + rolloff * (d - min)) beyond it, held at the maximum
+ * distance), and its pan comes from where it is to the listener's right or
+ * left (left-handed coordinates, as Direct3D's). Head-relative buffers are
+ * placed from the listener; DS3DMODE_DISABLE is no 3D at all. Not heard yet:
+ * Doppler and sound cones (both kept and answered); deferred settings are
+ * applied at once (CommitDeferredSettings has nothing to commit).
  */
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -30,6 +41,10 @@
 #define DSERR_PRIOLEVELNEEDED 0x88780046u
 #define DSERR_BUFFERLOST    0x88780096u
 #define DSBCAPS_PRIMARYBUFFER 0x00000001u
+#define DSBCAPS_CTRL3D      0x00000010u
+#define E_NOINTERFACE       0x80004002u
+#define DS3DMODE_HEADRELATIVE 1u
+#define DS3DMODE_DISABLE    2u
 #define DSBPLAY_LOOPING     0x00000001u
 #define DSBSTATUS_PLAYING   0x00000001u
 #define DSBSTATUS_LOOPING   0x00000004u
@@ -47,7 +62,23 @@ typedef struct {
     int mixed;                  /* pos0 is from the last mix (not set since) */
     int volume, pan;            /* hundredths of a dB; -10000..10000 */
     float gl, gr;
+    /* DirectSound 3D (DSBCAPS_CTRL3D): DS3DBUFFER, from vPosition on. */
+    int is3d;
+    struct {
+        float pos[3], vel[3];
+        uint32_t cone_in, cone_out;
+        float cone[3];
+        int32_t cone_volume;
+        float min_dist, max_dist;
+        uint32_t mode;
+    } s3;
 } dsbuf;
+
+/* The listener (DS3DLISTENER, from vPosition on): one for the device. */
+static struct {
+    float pos[3], vel[3], front[3], top[3];
+    float distance, rolloff, doppler;
+} g_listener = { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, 1.0f, 1.0f, 1.0f };
 
 static pthread_mutex_t g_mix = PTHREAD_MUTEX_INITIALIZER;
 #define MAX_BUFS 256
@@ -59,11 +90,40 @@ static uint64_t g_mix_at;       /* when the last mix ran (SDL's counter) */
 static int g_mix_frames;        /* ...and how many output frames it made */
 void hle_dsound_set_master(float gain) { g_master = gain; }
 
+/* A 3D buffer's gain and its left and right shares, from where it is. */
+static void place(const dsbuf *b, float *g, float *l, float *r) {
+    float rel[3];
+    for (int k = 0; k < 3; k++)
+        rel[k] = b->s3.mode == DS3DMODE_HEADRELATIVE ? b->s3.pos[k] : b->s3.pos[k] - g_listener.pos[k];
+    float d = sqrtf(rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]);
+    float mn = b->s3.min_dist > 0 ? b->s3.min_dist : 1.0f, mx = b->s3.max_dist > mn ? b->s3.max_dist : mn;
+    float dd = d < mx ? d : mx;
+    float roll = g_listener.rolloff >= 0 ? g_listener.rolloff : 0;
+    *g = dd <= mn ? 1.0f : mn / (mn + roll * (dd - mn));
+    *l = *r = 1.0f;
+    if (d > 1e-6f && b->s3.mode != DS3DMODE_HEADRELATIVE) {
+        const float *f = g_listener.front, *t = g_listener.top;
+        float right[3] = { t[1] * f[2] - t[2] * f[1], t[2] * f[0] - t[0] * f[2], t[0] * f[1] - t[1] * f[0] };
+        float n = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+        float x = n > 1e-6f ? (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2]) / (n * d) : 0;
+        *l = x > 0 ? 1.0f - x : 1.0f, *r = x < 0 ? 1.0f + x : 1.0f;
+    } else if (d > 1e-6f) {
+        float x = rel[0] / d;                            /* head-relative: x is to the right */
+        *l = x > 0 ? 1.0f - x : 1.0f, *r = x < 0 ? 1.0f + x : 1.0f;
+    }
+}
+
 static void gains(dsbuf *b) {
     float v = b->volume <= -10000 ? 0.0f : powf(10.0f, (float)b->volume / 2000.0f);
     float l = 1.0f, r = 1.0f;
-    if (b->pan < 0) r = b->pan <= -10000 ? 0.0f : powf(10.0f, (float)b->pan / 2000.0f);
-    if (b->pan > 0) l = b->pan >= 10000 ? 0.0f : powf(10.0f, (float)-b->pan / 2000.0f);
+    if (b->is3d && b->s3.mode != DS3DMODE_DISABLE) {     /* placed: SetPan does not apply */
+        float g;
+        place(b, &g, &l, &r);
+        v *= g;
+    } else {
+        if (b->pan < 0) r = b->pan <= -10000 ? 0.0f : powf(10.0f, (float)b->pan / 2000.0f);
+        if (b->pan > 0) l = b->pan >= 10000 ? 0.0f : powf(10.0f, (float)-b->pan / 2000.0f);
+    }
     b->gl = v * l, b->gr = v * r;
 }
 
@@ -299,7 +359,7 @@ static uint32_t cursor(const dsbuf *b) {
 #define SLOT(self) MEM32((self) + 8)
 static dsbuf *buf_of(uint32_t self) { uint32_t i = SLOT(self); return i < MAX_BUFS ? g_buf[i] : NULL; }
 
-static uint32_t g_vt_ds, g_vt_buf;
+static uint32_t g_vt_ds, g_vt_buf, g_vt_3dbuf, g_vt_listener;
 static uint32_t new_buffer(dsbuf *b) {
     pthread_mutex_lock(&g_mix);
     int slot = -1;
@@ -312,7 +372,106 @@ static uint32_t new_buffer(dsbuf *b) {
     return o;
 }
 
+/* ---- DirectSound 3D ----
+ * IDirectSound3DBuffer and IDirectSound3DListener are objects of their own
+ * (QueryInterface on a buffer makes them), the word at +8 the buffer's slot.
+ * Their floats come as stdcall arguments' bits. */
+static float af(int i) { uint32_t u = A32(i); float f; memcpy(&f, &u, 4); return f; }
+static void put_v(uint32_t va, const float *v) { if (va) memcpy(hle_ptr(va), v, 12); }
+static void put_f(uint32_t va, float f) { if (va) memcpy(hle_ptr(va), &f, 4); }
+
+static void regain_all(void) {                           /* the listener moved: every 3D buffer */
+    for (int i = 0; i < MAX_BUFS; i++) if (g_buf[i] && g_buf[i]->is3d) gains(g_buf[i]);
+}
+static void q_Release(void) {                            /* a 3D interface: its own object */
+    uint32_t self = A32(0), n = --MEM32(self + 4);
+    if (!n) hle_com_free(self);
+    RET(n, 1);
+}
+
+/* IDirectSound3DBuffer: the buffer's DS3DBUFFER. */
+#define B3(self) buf_of(self)
+#define B3_GET(name, expr) static void t_##name(void) {                       \
+        dsbuf *b = B3(A32(0));                                                \
+        if (!b) RET(DSERR_INVALIDPARAM, 2);                                   \
+        pthread_mutex_lock(&g_mix); expr; pthread_mutex_unlock(&g_mix);       \
+        RET(DS_OK, 2);                                                        \
+    }
+B3_GET(GetPosition, put_v(A32(1), b->s3.pos))
+B3_GET(GetVelocity, put_v(A32(1), b->s3.vel))
+B3_GET(GetConeOrientation, put_v(A32(1), b->s3.cone))
+B3_GET(GetConeOutsideVolume, if (A32(1)) MEM32(A32(1)) = (uint32_t)b->s3.cone_volume)
+B3_GET(GetMinDistance, put_f(A32(1), b->s3.min_dist))
+B3_GET(GetMaxDistance, put_f(A32(1), b->s3.max_dist))
+B3_GET(GetMode, if (A32(1)) MEM32(A32(1)) = b->s3.mode)
+B3_GET(GetAllParameters, if (A32(1)) memcpy(hle_ptr(A32(1) + 4), &b->s3, 60))
+static void t_GetConeAngles(void) {                      /* (this, &inside, &outside) */
+    dsbuf *b = B3(A32(0));
+    if (!b) RET(DSERR_INVALIDPARAM, 3);
+    if (A32(1)) MEM32(A32(1)) = b->s3.cone_in;
+    if (A32(2)) MEM32(A32(2)) = b->s3.cone_out;
+    RET(DS_OK, 3);
+}
+#define B3_SET(name, n, expr) static void t_##name(void) {                    \
+        dsbuf *b = B3(A32(0));                                                \
+        if (!b) RET(DSERR_INVALIDPARAM, n);                                   \
+        pthread_mutex_lock(&g_mix); expr; gains(b); pthread_mutex_unlock(&g_mix); \
+        RET(DS_OK, n);                                                        \
+    }
+B3_SET(SetPosition, 5, (b->s3.pos[0] = af(1), b->s3.pos[1] = af(2), b->s3.pos[2] = af(3)))
+B3_SET(SetVelocity, 5, (b->s3.vel[0] = af(1), b->s3.vel[1] = af(2), b->s3.vel[2] = af(3)))
+B3_SET(SetConeOrientation, 5, (b->s3.cone[0] = af(1), b->s3.cone[1] = af(2), b->s3.cone[2] = af(3)))
+B3_SET(SetConeAngles, 4, (b->s3.cone_in = A32(1), b->s3.cone_out = A32(2)))
+B3_SET(SetConeOutsideVolume, 3, b->s3.cone_volume = (int32_t)A32(1))
+B3_SET(SetMinDistance, 3, b->s3.min_dist = af(1))
+B3_SET(SetMaxDistance, 3, b->s3.max_dist = af(1))
+B3_SET(SetMode, 3, b->s3.mode = A32(1))
+B3_SET(SetAllParameters, 3, if (A32(1)) memcpy(&b->s3, hle_ptr(A32(1) + 4), 60))
+
+/* IDirectSound3DListener: the device's DS3DLISTENER. */
+static void l_GetPosition(void) { put_v(A32(1), g_listener.pos); RET(DS_OK, 2); }
+static void l_GetVelocity(void) { put_v(A32(1), g_listener.vel); RET(DS_OK, 2); }
+static void l_GetOrientation(void) { put_v(A32(1), g_listener.front); put_v(A32(2), g_listener.top); RET(DS_OK, 3); }
+static void l_GetDistanceFactor(void) { put_f(A32(1), g_listener.distance); RET(DS_OK, 2); }
+static void l_GetRolloffFactor(void) { put_f(A32(1), g_listener.rolloff); RET(DS_OK, 2); }
+static void l_GetDopplerFactor(void) { put_f(A32(1), g_listener.doppler); RET(DS_OK, 2); }
+static void l_GetAllParameters(void) { if (A32(1)) memcpy(hle_ptr(A32(1) + 4), &g_listener, 60); RET(DS_OK, 2); }
+#define L_SET(name, n, expr) static void l_##name(void) {                     \
+        pthread_mutex_lock(&g_mix); expr; regain_all(); pthread_mutex_unlock(&g_mix); \
+        RET(DS_OK, n);                                                        \
+    }
+L_SET(SetPosition, 5, (g_listener.pos[0] = af(1), g_listener.pos[1] = af(2), g_listener.pos[2] = af(3)))
+L_SET(SetVelocity, 5, (g_listener.vel[0] = af(1), g_listener.vel[1] = af(2), g_listener.vel[2] = af(3)))
+L_SET(SetOrientation, 8, (g_listener.front[0] = af(1), g_listener.front[1] = af(2), g_listener.front[2] = af(3),
+                          g_listener.top[0] = af(4), g_listener.top[1] = af(5), g_listener.top[2] = af(6)))
+L_SET(SetDistanceFactor, 3, g_listener.distance = af(1))
+L_SET(SetRolloffFactor, 3, g_listener.rolloff = af(1))
+L_SET(SetDopplerFactor, 3, g_listener.doppler = af(1))
+L_SET(SetAllParameters, 3, if (A32(1)) memcpy(&g_listener, hle_ptr(A32(1) + 4), 60))
+static void l_CommitDeferredSettings(void) { RET(DS_OK, 1); }   /* applied as they were set */
+
 /* ---- IDirectSoundBuffer ---- */
+/* QueryInterface: IDirectSoundBuffer (and 8: the same methods first) is the
+ * buffer; IDirectSound3DBuffer a 3D buffer's 3D half, IDirectSound3DListener
+ * the primary's listener. */
+static void b_QueryInterface(void) {                     /* (this, riid, &out) */
+    uint32_t self = A32(0), d1 = A32(1) ? MEM32(A32(1)) : 0, out = A32(2);
+    dsbuf *b = buf_of(self);
+    if (!out) RET(DSERR_INVALIDPARAM, 3);
+    if (b && (d1 == 0 || d1 == 0x279AFA85u || d1 == 0x6825A449u)) {
+        MEM32(self + 4)++;
+        MEM32(out) = self;
+        RET(DS_OK, 3);
+    }
+    uint32_t vt = 0;
+    if (b && d1 == 0x279AFA86u && b->is3d && !b->primary) vt = g_vt_3dbuf;
+    if (b && d1 == 0x279AFA84u && b->primary) vt = g_vt_listener;
+    if (!vt) { MEM32(out) = 0; RET(E_NOINTERFACE, 3); }
+    uint32_t o = hle_com_new(vt, 12);
+    SLOT(o) = SLOT(self);
+    MEM32(out) = o;
+    RET(DS_OK, 3);
+}
 static void b_Release(void) {
     uint32_t self = A32(0), n = --MEM32(self + 4);
     if (!n) {
@@ -458,6 +617,9 @@ static void d_CreateSoundBuffer(void) {                  /* (this, &DSBUFFERDESC
     uint32_t flags = MEM32(d + 4), bytes = MEM32(d + 8), wfx = MEM32(d + 16);
     dsbuf *b = (dsbuf *)calloc(1, sizeof *b);
     b->flags = flags, b->primary = (flags & DSBCAPS_PRIMARYBUFFER) != 0;
+    b->is3d = (flags & DSBCAPS_CTRL3D) != 0;
+    b->s3.min_dist = 1.0f, b->s3.max_dist = 1e9f;        /* DS3D_DEFAULTMINDISTANCE, _MAXDISTANCE */
+    b->s3.cone_in = b->s3.cone_out = 360, b->s3.cone[2] = 1.0f;
     b->channels = 2, b->bits = 16, b->rate = 22050, b->block = 4;
     if (wfx) {
         b->channels = MEM16(wfx + 2), b->rate = (int)MEM32(wfx + 4), b->block = MEM16(wfx + 12), b->bits = MEM16(wfx + 14);
@@ -521,7 +683,7 @@ static void vtables(void) {
         { "IDirectSound::GetSpeakerConfig", d_GetSpeakerConfig }, { "IDirectSound::SetSpeakerConfig", d_SetSpeakerConfig },
         { "IDirectSound::Initialize", d_Initialize }, { 0, 0 } };
     static const win32hle_shim buf[] = {
-        { "IDirectSoundBuffer::QueryInterface", hle_com_QueryInterface }, { "IDirectSoundBuffer::AddRef", hle_com_AddRef },
+        { "IDirectSoundBuffer::QueryInterface", b_QueryInterface }, { "IDirectSoundBuffer::AddRef", hle_com_AddRef },
         { "IDirectSoundBuffer::Release", b_Release }, { "IDirectSoundBuffer::GetCaps", b_GetCaps },
         { "IDirectSoundBuffer::GetCurrentPosition", b_GetCurrentPosition }, { "IDirectSoundBuffer::GetFormat", b_GetFormat },
         { "IDirectSoundBuffer::GetVolume", b_GetVolume }, { "IDirectSoundBuffer::GetPan", b_GetPan },
@@ -532,8 +694,41 @@ static void vtables(void) {
         { "IDirectSoundBuffer::SetPan", b_SetPan }, { "IDirectSoundBuffer::SetFrequency", b_SetFrequency },
         { "IDirectSoundBuffer::Stop", b_Stop }, { "IDirectSoundBuffer::Unlock", b_Unlock },
         { "IDirectSoundBuffer::Restore", b_Restore }, { 0, 0 } };
+    static const win32hle_shim b3[] = {
+        { "IDirectSound3DBuffer::QueryInterface", hle_com_QueryInterface }, { "IDirectSound3DBuffer::AddRef", hle_com_AddRef },
+        { "IDirectSound3DBuffer::Release", q_Release }, { "IDirectSound3DBuffer::GetAllParameters", t_GetAllParameters },
+        { "IDirectSound3DBuffer::GetConeAngles", t_GetConeAngles },
+        { "IDirectSound3DBuffer::GetConeOrientation", t_GetConeOrientation },
+        { "IDirectSound3DBuffer::GetConeOutsideVolume", t_GetConeOutsideVolume },
+        { "IDirectSound3DBuffer::GetMaxDistance", t_GetMaxDistance }, { "IDirectSound3DBuffer::GetMinDistance", t_GetMinDistance },
+        { "IDirectSound3DBuffer::GetMode", t_GetMode }, { "IDirectSound3DBuffer::GetPosition", t_GetPosition },
+        { "IDirectSound3DBuffer::GetVelocity", t_GetVelocity }, { "IDirectSound3DBuffer::SetAllParameters", t_SetAllParameters },
+        { "IDirectSound3DBuffer::SetConeAngles", t_SetConeAngles },
+        { "IDirectSound3DBuffer::SetConeOrientation", t_SetConeOrientation },
+        { "IDirectSound3DBuffer::SetConeOutsideVolume", t_SetConeOutsideVolume },
+        { "IDirectSound3DBuffer::SetMaxDistance", t_SetMaxDistance }, { "IDirectSound3DBuffer::SetMinDistance", t_SetMinDistance },
+        { "IDirectSound3DBuffer::SetMode", t_SetMode }, { "IDirectSound3DBuffer::SetPosition", t_SetPosition },
+        { "IDirectSound3DBuffer::SetVelocity", t_SetVelocity }, { 0, 0 } };
+    static const win32hle_shim li[] = {
+        { "IDirectSound3DListener::QueryInterface", hle_com_QueryInterface },
+        { "IDirectSound3DListener::AddRef", hle_com_AddRef }, { "IDirectSound3DListener::Release", q_Release },
+        { "IDirectSound3DListener::GetAllParameters", l_GetAllParameters },
+        { "IDirectSound3DListener::GetDistanceFactor", l_GetDistanceFactor },
+        { "IDirectSound3DListener::GetDopplerFactor", l_GetDopplerFactor },
+        { "IDirectSound3DListener::GetOrientation", l_GetOrientation }, { "IDirectSound3DListener::GetPosition", l_GetPosition },
+        { "IDirectSound3DListener::GetRolloffFactor", l_GetRolloffFactor },
+        { "IDirectSound3DListener::GetVelocity", l_GetVelocity },
+        { "IDirectSound3DListener::SetAllParameters", l_SetAllParameters },
+        { "IDirectSound3DListener::SetDistanceFactor", l_SetDistanceFactor },
+        { "IDirectSound3DListener::SetDopplerFactor", l_SetDopplerFactor },
+        { "IDirectSound3DListener::SetOrientation", l_SetOrientation }, { "IDirectSound3DListener::SetPosition", l_SetPosition },
+        { "IDirectSound3DListener::SetRolloffFactor", l_SetRolloffFactor },
+        { "IDirectSound3DListener::SetVelocity", l_SetVelocity },
+        { "IDirectSound3DListener::CommitDeferredSettings", l_CommitDeferredSettings }, { 0, 0 } };
     g_vt_ds = hle_com_vtable(ds);
     g_vt_buf = hle_com_vtable(buf);
+    g_vt_3dbuf = hle_com_vtable(b3);
+    g_vt_listener = hle_com_vtable(li);
 }
 
 static void s_DirectSoundCreate(void) {                  /* (guid, &out, outer) */
