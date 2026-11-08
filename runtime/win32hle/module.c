@@ -39,6 +39,10 @@ static const char *const g_system[] = {
     "kernel32", "user32", "gdi32", "advapi32", "shell32", "ole32", "oleaut32", "winmm",
     "wsock32", "ws2_32", "ddraw", "dsound", "dinput", "version", "comctl32", "comdlg32",
     "ntdll", "msvcrt", "imm32", "mpr", "rpcrt4", "uuid", "dplayx", "d3dim",
+    /* DirectX 9's: a host answers their entry points (Direct3DCreate9,
+     * DirectInput8Create, XInputGetState), loaded by name at run time.
+     * Added at the end: each module's pseudo-base is its index. */
+    "d3d9", "dinput8", "xinput1_3", "xinput9_1_0",
 };
 
 static void base_of(const char *path, char *out, size_t n) {
