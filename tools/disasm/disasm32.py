@@ -257,6 +257,25 @@ _TABLE_JMP = re.compile(r"dword ptr \[\w+\*4 \+ (0x[0-9a-f]+)\]$")
 SCAN_WINDOW = 8192
 
 
+class _Mem:
+    """A memory operand's addressing, copied out of capstone (decode cache)."""
+    __slots__ = ('base', 'index', 'scale', 'disp')
+
+    def __init__(self, m):
+        self.base, self.index, self.scale, self.disp = m.base, m.index, m.scale, m.disp
+
+
+class _Op:
+    """The operand fields this tool reads (type, imm, mem), without the
+    capstone detail struct behind them: what the decode cache keeps."""
+    __slots__ = ('type', 'imm', 'mem')
+
+    def __init__(self, op):
+        self.type = op.type
+        self.imm = op.imm if op.type == X86_OP_IMM else 0
+        self.mem = _Mem(op.mem) if op.type == X86_OP_MEM else None
+
+
 class Disassembler:
     def __init__(self, pe_data: bytes, image_base: int, sections: list):
         """
@@ -267,6 +286,7 @@ class Disassembler:
         self.pe_data = pe_data
         self.image_base = image_base
         self.sections = sections
+        self._decoded = None     # enable_decode_cache: address -> one instruction, light
         self.md = Cs(CS_ARCH_X86, CS_MODE_32)
         self.md.detail = True
 
@@ -452,6 +472,48 @@ class Disassembler:
             return None
         return self.pe_data[offset:offset + size]
 
+    def enable_decode_cache(self):
+        """Decode each address once, for a caller that never lifts.
+
+        disassemble_function walks a body from each entry anew, and an entry
+        inside another body (an alias, or a false start in a switch arm) walks
+        that body again. D3DX 9's August 2005 DLL has one 38,000-instruction
+        body that 1,114 entries reach: 48 million decodes for 2 MB of code, 21
+        minutes of a 22-minute run, all of it capstone building the same
+        instructions again.
+
+        With the cache each address is decoded once and kept as plain fields,
+        its operands as _Op (type, imm, mem): all this tool reads of them, and
+        none of the capstone detail struct, which is what memory went on
+        before release_operands. Opt-in because the lifter, driven in process,
+        reads full capstone operands from these instructions; the JSON CLI
+        never lifts, and turns it on.
+        """
+        self._decoded = {}
+
+    def _cached_at(self, va: int, max_bytes: int):
+        """disassemble_at through the decode cache: the same instructions."""
+        cache, end, cur = self._decoded, va + max_bytes, va
+        while True:
+            hit = cache.get(cur)
+            if hit is None:
+                break
+            size, mnemonic, op_str, raw, ops = hit
+            if cur + size > end:        # past this call's window: not decoded here
+                return
+            yield Instruction(address=cur, size=size, mnemonic=mnemonic, op_str=op_str,
+                              bytes=raw, operands=list(ops))
+            cur += size
+        data = self.read_bytes(cur, end - cur)
+        if not data:
+            return
+        for insn in decode(self.md, data, cur):
+            ops = tuple(_Op(o) for o in insn.operands) if insn.operands else ()
+            raw = bytes(insn.bytes)
+            cache[insn.address] = (insn.size, insn.mnemonic, insn.op_str, raw, ops)
+            yield Instruction(address=insn.address, size=insn.size, mnemonic=insn.mnemonic,
+                              op_str=insn.op_str, bytes=raw, operands=list(ops))
+
     def disassemble_at(self, va: int, max_bytes: int = 4096):
         """Yield instructions starting at VA.
 
@@ -469,6 +531,9 @@ class Disassembler:
 
         Callers must iterate the result at most once.
         """
+        if self._decoded is not None:
+            yield from self._cached_at(va, max_bytes)
+            return
         data = self.read_bytes(va, max_bytes)
         if data is None:
             return
@@ -1995,7 +2060,8 @@ def main(argv=None):
     dis = Disassembler(pe_data, info.image_base, info.sections)
     # This CLI exports a catalog and never lifts, so it is the caller that can
     # afford to let the operand lists go -- which is where the memory went on a
-    # multi-megabyte image.
+    # multi-megabyte image -- and to decode each address once.
+    dis.enable_decode_cache()
     functions = dis.find_functions(info.code_start, info.code_end, iat,
                                    seeds=seeds, release_operands=True)
 
