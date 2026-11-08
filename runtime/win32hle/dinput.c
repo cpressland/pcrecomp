@@ -103,13 +103,20 @@ static void axes(const dev_t_ *d, int *x, int *y) {
     if (d->absolute) hle_input_position(x, y); else hle_input_raw(x, y);
 }
 /* A relative mouse held exclusively: the host gives movement alone, as
- * Windows does (the desktop's pointer stops at an edge; the mouse does not). */
+ * Windows does (the desktop's pointer stops at an edge; the mouse does not).
+ * A host whose game takes the mouse non-exclusively but draws its own
+ * cursor (Star Trek: Legacy, turning its camera by the mouse) says so with
+ * hle_dinput_relative_shared: Windows gives such a device movement past the
+ * edge too, and only the system pointer, which that game hides, is lost. */
+static int g_shared_relative;
+static void relative(void);
+void hle_dinput_relative_shared(int on) { g_shared_relative = on != 0; relative(); }
 static void relative(void) {
     int on = 0;
     for (int i = 0; i < MAX_DEV; i++) {
         if (!g_devs[i]) continue;
         dev_t_ *d = (dev_t_ *)hle_ptr(MEM32(g_devs[i] + 8));
-        if (d->kind == MOUSE && d->acquired && d->exclusive && !d->absolute) on = 1;
+        if (d->kind == MOUSE && d->acquired && (d->exclusive || g_shared_relative) && !d->absolute) on = 1;
     }
     static int was = -1;
     if (on != was && hle_input_relative_hook) hle_input_relative_hook(on);
