@@ -1,5 +1,5 @@
 /*
- * dinput.c - DirectInput (3 and 5): the system mouse and keyboard.
+ * dinput.c - DirectInput (3, 5 and 8): the system mouse and keyboard.
  *
  * Both devices read the input state the window manager keeps (user32.c:
  * the cursor, and the key and button bytes GetAsyncKeyState answers from),
@@ -15,6 +15,14 @@
  * keyboard reports DIK scan codes. Both answer GetDeviceState (immediate)
  * and GetDeviceData (buffered: each change as an event, recorded as input
  * arrives, with the device's notification event set then).
+ *
+ * DirectInput 8 (DirectInput8Create) is the same devices behind its own
+ * interfaces: IDirectInput8A is IDirectInput2A and two more methods
+ * (EnumDevicesBySemantics, ConfigureDevices: action maps, which nothing
+ * here has), IDirectInputDevice8A is IDirectInputDevice2A and five more (an
+ * effects file, action maps, an image), and devices are described with
+ * DirectInput 8's types (DI8DEVTYPE_MOUSE 0x12, _KEYBOARD 0x13) where 3 and 5
+ * use DIDEVTYPE_MOUSE 2 and _KEYBOARD 3.
  *
  * HLE_DITRACE=1 prints the calls that set a device up.
  */
@@ -42,6 +50,7 @@ enum { MOUSE = 1, KEYBOARD = 2 };
 typedef struct { uint32_t ofs, data, time, seq; } ev_t;    /* DIDEVICEOBJECTDATA */
 typedef struct {
     int kind, acquired, absolute, exclusive;
+    int v8;                                              /* made by DirectInput 8: its device types */
     uint32_t data_size;                                  /* SetDataFormat's dwDataSize */
     uint32_t buffer;                                     /* DIPROP_BUFFERSIZE */
     int last_x, last_y;                                  /* GetDeviceState's: where the last read left the cursor */
@@ -53,11 +62,17 @@ typedef struct {
     uint32_t event;                                      /* SetEventNotification's */
 } dev_t_;
 
-static uint32_t g_vt_di, g_vt_dev, g_seq;
+static uint32_t g_vt_di, g_vt_dev, g_vt_di8, g_vt_dev8, g_seq;
 /* The devices made, so input arriving can reach them. */
 #define MAX_DEV 16
 static uint32_t g_devs[MAX_DEV];
 #define DEV(o) ((dev_t_ *)hle_ptr(MEM32((o) + 8)))
+
+/* A device's DIDEVTYPE: DirectInput 8's codes for its devices
+ * (DI8DEVTYPEMOUSE_TRADITIONAL, DI8DEVTYPEKEYBOARD_PCENH). */
+static uint32_t dev_type(int kind, int v8) {
+    return kind == MOUSE ? (v8 ? 0x0212u : 0x0102u) : (v8 ? 0x0413u : 0x0403u);
+}
 
 /* ---- virtual keys to DirectInput's scan codes ---- */
 static uint8_t g_dik[256];                                /* vk -> DIK */
@@ -164,8 +179,9 @@ static void baseline(dev_t_ *d) {
 /* ---- IDirectInputDevice(2)A ---- */
 static void dv_QueryInterface(void) {
     uint32_t d1 = MEM32(A32(1));
-    /* IUnknown, IDirectInputDeviceA, IDirectInputDevice2A: one object */
-    if (d1 == 0 || d1 == 0x5944E680u || d1 == 0x5944E682u) { MEM32(A32(2)) = A32(0); MEM32(A32(0) + 4)++; RET(DI_OK, 3); }
+    /* IUnknown, IDirectInputDeviceA, IDirectInputDevice2A (or 8A): one object */
+    if (d1 == 0 || (!DEV(A32(0))->v8 && (d1 == 0x5944E680u || d1 == 0x5944E682u)) ||
+        (DEV(A32(0))->v8 && d1 == 0x54D41080u)) { MEM32(A32(2)) = A32(0); MEM32(A32(0) + 4)++; RET(DI_OK, 3); }
     MEM32(A32(2)) = 0;
     RET(DIERR_NOINTERFACE, 3);
 }
@@ -184,7 +200,7 @@ static void dv_GetCapabilities(void) {                   /* DIDEVCAPS */
     uint32_t c = A32(1), size = MEM32(c) ? MEM32(c) : 24;
     memset(hle_ptr(c + 4), 0, size - 4);
     MEM32(c + 4) = 1;                                    /* DIDC_ATTACHED */
-    MEM32(c + 8) = d->kind == MOUSE ? 0x0102u : 0x0403u; /* a mouse, a keyboard: their DIDEVTYPEs */
+    MEM32(c + 8) = dev_type(d->kind, d->v8);             /* a mouse, a keyboard: their DIDEVTYPEs */
     MEM32(c + 12) = d->kind == MOUSE ? 3 : 0;            /* axes */
     MEM32(c + 16) = d->kind == MOUSE ? 3 : 128;          /* buttons */
     RET(DI_OK, 2);
@@ -283,30 +299,35 @@ static void dv_SetCooperativeLevel(void) {             /* (this, hwnd, flags): D
     RET(DI_OK, 3);
 }
 static void dv_GetObjectInfo(void) { RET(DIERR_OBJECTNOTFOUND, 4); }
-static void put_instance(uint32_t p, int kind) {         /* DIDEVICEINSTANCEA */
+static void put_instance(uint32_t p, int kind, int v8) { /* DIDEVICEINSTANCEA */
     uint32_t size = MEM32(p) ? MEM32(p) : 0x234;
     memset(hle_ptr(p + 4), 0, size - 4);
     uint8_t g[16] = { 0x60, 0x2B, 0x1D, 0x6F, 0xA0, 0xD5, 0xCF, 0x11, 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 };
     if (kind == KEYBOARD) g[0] = 0x61;                   /* GUID_SysMouse, GUID_SysKeyboard */
     memcpy(hle_ptr(p + 4), g, 16);
     memcpy(hle_ptr(p + 20), g, 16);
-    MEM32(p + 36) = kind == MOUSE ? 0x0102u : 0x0403u;
+    MEM32(p + 36) = dev_type(kind, v8);
     strcpy((char *)hle_ptr(p + 40), kind == MOUSE ? "Mouse" : "Keyboard");
     strcpy((char *)hle_ptr(p + 300), kind == MOUSE ? "Mouse" : "Keyboard");
 }
-static void dv_GetDeviceInfo(void) { put_instance(A32(1), DEV(A32(0))->kind); RET(DI_OK, 2); }
+static void dv_GetDeviceInfo(void) { dev_t_ *d = DEV(A32(0)); put_instance(A32(1), d->kind, d->v8); RET(DI_OK, 2); }
 static void dv_ok2(void) { RET(DI_OK, 2); }
 static void dv_ok3(void) { RET(DI_OK, 3); }
 static void dv_ok4(void) { RET(DI_OK, 4); }
 static void dv_none1(void) { RET(DI_NOEFFECT, 1); }
 static void dv_no2(void) { RET(DIERR_UNSUPPORTED, 2); }
 static void dv_no3(void) { RET(DIERR_UNSUPPORTED, 3); }
+static void dv_no4(void) { RET(DIERR_UNSUPPORTED, 4); }
 static void dv_no5(void) { RET(DIERR_UNSUPPORTED, 5); }
+static void dv_ok5(void) { RET(DI_OK, 5); }
+static void dv_ok6(void) { RET(DI_OK, 6); }
 
 /* ---- IDirectInput(2)A ---- */
+/* The IDirectInput object's word at +8: 8 if DirectInput8Create made it. */
+#define DI_V8(o) (MEM32((o) + 8) == 8)
 static void di_QueryInterface(void) {
-    uint32_t d1 = MEM32(A32(1));
-    if (d1 == 0 || d1 == 0x89521360u || d1 == 0x5944E662u) { MEM32(A32(2)) = A32(0); MEM32(A32(0) + 4)++; RET(DI_OK, 3); }
+    uint32_t d1 = MEM32(A32(1)), self = A32(0);
+    if (d1 == 0 || (!DI_V8(self) && (d1 == 0x89521360u || d1 == 0x5944E662u)) || (DI_V8(self) && d1 == 0xBF798030u)) { MEM32(A32(2)) = A32(0); MEM32(A32(0) + 4)++; RET(DI_OK, 3); }
     MEM32(A32(2)) = 0;
     RET(DIERR_NOINTERFACE, 3);
 }
@@ -321,8 +342,9 @@ static void di_CreateDevice(void) {                      /* (this, guid, &device
     if (!kind) { MEM32(A32(2)) = 0; RET(DIERR_DEVICENOTREG, 4); }
     dev_t_ *d = (dev_t_ *)hle_alloc(sizeof *d);
     d->kind = kind;
+    d->v8 = DI_V8(A32(0));
     baseline(d);
-    uint32_t o = hle_com_new(g_vt_dev, 12);
+    uint32_t o = hle_com_new(d->v8 ? g_vt_dev8 : g_vt_dev, 12);
     MEM32(o + 8) = hle_va(d);
     MEM32(A32(2)) = o;
     for (int i = 0; i < MAX_DEV; i++) if (!g_devs[i]) { g_devs[i] = o; break; }
@@ -331,11 +353,14 @@ static void di_CreateDevice(void) {                      /* (this, guid, &device
     RET(DI_OK, 4);
 }
 static void di_EnumDevices(void) {                       /* (this, type, callback, ctx, flags) */
+    /* The type is DIDEVTYPE_MOUSE 2 or _KEYBOARD 3, or (DirectInput 8)
+     * DI8DEVCLASS_POINTER 2 or _KEYBOARD 3: the same numbers. */
     uint32_t type = A32(1) & 0xFF, mark = hle_scratch_mark(), p = hle_scratch(0x244);
+    int v8 = DI_V8(A32(0));
     for (int kind = MOUSE; kind <= KEYBOARD; kind++) {
         if (type && type != (kind == MOUSE ? 2u : 3u)) continue;   /* DIDEVTYPE_MOUSE, DIDEVTYPE_KEYBOARD */
         MEM32(p) = 0x244;
-        put_instance(p, kind);
+        put_instance(p, kind, v8);
         uint32_t a[2] = { p, A32(3) };
         if (!hle_call_guest(A32(2), 2, a)) break;        /* DIENUM_STOP */
     }
@@ -372,6 +397,22 @@ static void vtables(void) {
         { "IDirectInputDevice2A::Poll", dv_none1 }, { "IDirectInputDevice2A::SendDeviceData", dv_no5 }, { 0, 0 } };
     g_vt_di = hle_com_vtable(di);
     g_vt_dev = hle_com_vtable(dv);
+    /* DirectInput 8: the same slots, and its own at the end. */
+    static win32hle_shim di8[16], dv8[40];
+    int n = 0;
+    for (; di[n].name; n++) di8[n] = di[n];
+    di8[n++] = (win32hle_shim){ "IDirectInput8A::EnumDevicesBySemantics", dv_ok6 };
+    di8[n++] = (win32hle_shim){ "IDirectInput8A::ConfigureDevices", dv_ok5 };
+    di8[n] = (win32hle_shim){ 0, 0 };
+    for (n = 0; dv[n].name; n++) dv8[n] = dv[n];
+    dv8[n++] = (win32hle_shim){ "IDirectInputDevice7A::EnumEffectsInFile", dv_ok5 };
+    dv8[n++] = (win32hle_shim){ "IDirectInputDevice7A::WriteEffectToFile", dv_no5 };
+    dv8[n++] = (win32hle_shim){ "IDirectInputDevice8A::BuildActionMap", dv_no4 };
+    dv8[n++] = (win32hle_shim){ "IDirectInputDevice8A::SetActionMap", dv_no4 };
+    dv8[n++] = (win32hle_shim){ "IDirectInputDevice8A::GetImageInfo", dv_no2 };
+    dv8[n] = (win32hle_shim){ 0, 0 };
+    g_vt_di8 = hle_com_vtable(di8);
+    g_vt_dev8 = hle_com_vtable(dv8);
     (void)dv_ok2;
 }
 
@@ -382,7 +423,20 @@ static void x_DirectInputCreateA(void) {                 /* (hinst, version, &ou
     RET(DI_OK, 4);
 }
 
+/* DirectInput8Create(hinst, version, riid, &out, outer): IID_IDirectInput8A. */
+static void x_DirectInput8Create(void) {
+    vtables();
+    uint32_t d1 = A32(2) ? MEM32(A32(2)) : 0;
+    T("DirectInput8Create version %X\n", A32(1));
+    if (d1 != 0xBF798030u) { MEM32(A32(3)) = 0; RET(DIERR_NOINTERFACE, 5); }   /* the A interface only */
+    uint32_t o = hle_com_new(g_vt_di8, 12);
+    MEM32(o + 8) = 8;
+    MEM32(A32(3)) = o;
+    RET(DI_OK, 5);
+}
+
 const win32hle_shim win32hle_dinput[] = {
     { "DirectInputCreateA", x_DirectInputCreateA }, { "DirectInputCreate", x_DirectInputCreateA },
+    { "DirectInput8Create", x_DirectInput8Create },
     { 0, 0 }
 };
