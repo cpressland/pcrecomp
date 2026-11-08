@@ -109,6 +109,12 @@ static void buttons(uint8_t out[3]) {
     out[0] = hle_input_vk(1) & 0x80, out[1] = hle_input_vk(2) & 0x80, out[2] = hle_input_vk(4) & 0x80;
 }
 
+/* Where the axes are: the cursor (absolute), or the mouse's own movement
+ * counted (relative), which SetCursorPos and the screen's edge leave alone,
+ * as on Windows. */
+static void axes(const dev_t_ *d, int *x, int *y) {
+    if (d->absolute) hle_input_position(x, y); else hle_input_raw(x, y);
+}
 static void push(dev_t_ *d, uint32_t ofs, uint32_t data) {
     if (d->qn >= QUEUE || (d->buffer && (uint32_t)d->qn >= d->buffer)) { d->overflow = 1; return; }
     ev_t *e = &d->q[d->qn++];
@@ -119,7 +125,7 @@ static void gather(dev_t_ *d) {
     if (d->kind == MOUSE) {
         int x, y;
         uint8_t b[3];
-        hle_input_position(&x, &y);
+        axes(d, &x, &y);
         if (x != d->buf_x) push(d, 0, d->absolute ? (uint32_t)x : (uint32_t)(x - d->buf_x));
         if (y != d->buf_y) push(d, 4, d->absolute ? (uint32_t)y : (uint32_t)(y - d->buf_y));
         d->buf_x = x, d->buf_y = y;
@@ -148,7 +154,7 @@ static void arrived(void) {
     }
 }
 static void baseline(dev_t_ *d) {
-    hle_input_position(&d->last_x, &d->last_y);
+    axes(d, &d->last_x, &d->last_y);
     d->buf_x = d->last_x, d->buf_y = d->last_y;
     buttons(d->buf_buttons);
     keyboard(d->buf_keys);
@@ -195,7 +201,11 @@ static void dv_SetProperty(void) {
     uint32_t id = A32(1), h = A32(2);
     T("SetProperty %u = %u\n", id, h ? MEM32(h + 16) : 0);
     if (id == 1) d->buffer = MEM32(h + 16) > QUEUE ? QUEUE : MEM32(h + 16);
-    else if (id == 2) d->absolute = MEM32(h + 16) == 1;  /* DIPROPAXISMODE_ABS */
+    else if (id == 2) {                                  /* DIPROPAXISMODE_ABS: the axes count from elsewhere */
+        d->absolute = MEM32(h + 16) == 1;
+        axes(d, &d->last_x, &d->last_y);
+        d->buf_x = d->last_x, d->buf_y = d->last_y;
+    }
     RET(DI_OK, 3);
 }
 static void dv_Acquire(void) {
@@ -212,7 +222,7 @@ static void dv_GetDeviceState(void) {                    /* (this, size, data) *
     if (d->kind == MOUSE) {                              /* DIMOUSESTATE: lX, lY, lZ, four buttons */
         int x, y;
         uint8_t b[3];
-        hle_input_position(&x, &y);
+        axes(d, &x, &y);
         buttons(b);
         if (n >= 12) {
             MEM32(p) = (uint32_t)(d->absolute ? x : x - d->last_x);

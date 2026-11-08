@@ -715,7 +715,13 @@ static uint32_t mk_state(void) {
            (g_keys[VK_CONTROL] & 0x80 ? 8u : 0u) | (g_keys[0x04] & 0x80 ? 0x10u : 0u);
 }
 void (*hle_input_hook)(void);                           /* the input state changed (dinput.c) */
+/* The mouse's own movement, as DirectInput's relative axes count it: what
+ * the hand moved, not where the cursor went. SetCursorPos does not move it,
+ * and the screen's edge does not stop it (hle_input_motion). */
+static int g_raw_x, g_raw_y;
+void hle_input_raw(int *x, int *y) { *x = g_raw_x, *y = g_raw_y; }
 void hle_input_mouse(uint32_t message, int sx, int sy) {
+    g_raw_x += sx - g_cursor_x, g_raw_y += sy - g_cursor_y;
     g_cursor_x = sx, g_cursor_y = sy;
     uint32_t vk = message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ? 1 : message == WM_RBUTTONDOWN || message == WM_RBUTTONUP ? 2
                 : message == WM_MBUTTONDOWN || message == WM_MBUTTONUP ? 4 : 0;
@@ -748,6 +754,17 @@ void hle_input_key(int down, uint32_t vk, uint32_t scan) {
     if (hle_input_hook) hle_input_hook();
 }
 void hle_input_cursor(int sx, int sy) { g_cursor_x = sx, g_cursor_y = sy; }
+/* The mouse moved by dx, dy (a host's relative mode): the cursor goes with
+ * it as far as the screen's edge, the raw count all the way. */
+void hle_input_motion(int dx, int dy) {
+    if (!dx && !dy) return;
+    int x = g_cursor_x + dx, y = g_cursor_y + dy;
+    x = x < 0 ? 0 : x >= g_screen_w ? g_screen_w - 1 : x;
+    y = y < 0 ? 0 : y >= g_screen_h ? g_screen_h - 1 : y;
+    int ox = g_cursor_x, oy = g_cursor_y;
+    g_raw_x += dx - (x - ox), g_raw_y += dy - (y - oy);   /* what the edge kept from the cursor */
+    hle_input_mouse(WM_MOUSEMOVE, x, y);              /* the rest, with the move */
+}
 /* What the input state is, for DirectInput (dinput.c): the cursor and a key
  * or button's byte (bit 7 down), by virtual-key code. */
 void hle_input_position(int *sx, int *sy) { *sx = g_cursor_x, *sy = g_cursor_y; }

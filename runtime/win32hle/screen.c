@@ -688,6 +688,15 @@ static SDL_Rect to_points(SDL_Rect r) {
  * in the window takes it back. A host turns it off with hle_screen_confine. */
 static int g_confine = 1, g_released, g_regrab_up;
 void hle_screen_confine(int on) { g_confine = on != 0; }
+/* Held as relative motion instead (a host's choice, for a game that draws
+ * its own cursor and steers by DirectInput's relative axes: a camera turned
+ * by the mouse): the pointer is hidden and each movement goes to the game
+ * as movement, so it does not stop at the window's edge, as on Windows the
+ * mouse does not stop at the screen's. The cursor still stops there. */
+static int g_relative, g_rel_on;
+static double g_rel_fx, g_rel_fy;                         /* what a movement left over, below a pixel */
+void hle_screen_relative(int on) { g_relative = on != 0; }
+static void warp(int x, int y);
 static void confine_update(void) {
 #if !defined(__EMSCRIPTEN__) && SDL_VERSION_ATLEAST(2, 0, 18)
     static int held;
@@ -696,6 +705,18 @@ static void confine_update(void) {
     int want = g_confine && !g_released && !g_menu_depth && g_dst.w > 0 && g_dst.h > 0
                && (SDL_GetWindowFlags(g_win) & SDL_WINDOW_INPUT_FOCUS);
     SDL_Rect r = want ? to_points(g_dst) : (SDL_Rect){ 0, 0, 0, 0 };
+    if (g_relative) {
+        if (want == g_rel_on) return;
+        g_rel_on = want, g_rel_fx = g_rel_fy = 0;
+        SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE);
+        if (!want) {                                     /* the pointer comes back where the game's cursor is */
+            int x, y;
+            hle_input_position(&x, &y);
+            warp(x, y);
+        }
+        fprintf(stderr, want ? "[screen] mouse held as relative motion\n" : "[screen] mouse let go\n");
+        return;
+    }
     if (want == held && (!want || !memcmp(&r, &at, sizeof r))) return;
     SDL_SetWindowMouseRect(g_win, want ? &r : NULL);
     SDL_SetWindowMouseGrab(g_win, want ? SDL_TRUE : SDL_FALSE);
@@ -762,6 +783,19 @@ void hle_screen_pump(void) {
         }
         case SDL_MOUSEMOTION: {
             int gx, gy;
+            if (g_rel_on) {                              /* points to the picture's pixels */
+                int pw, ph, ww, wh, w = g_src_w, h = g_src_h, bpp;
+                if (w <= 0 || h <= 0) hle_dd_mode(&w, &h, &bpp);
+                SDL_GetRendererOutputSize(g_ren, &pw, &ph);
+                SDL_GetWindowSize(g_win, &ww, &wh);
+                if (ww <= 0 || wh <= 0 || g_dst.w <= 0 || g_dst.h <= 0) break;
+                g_rel_fx += (double)e.motion.xrel * pw / ww * w / g_dst.w;
+                g_rel_fy += (double)e.motion.yrel * ph / wh * h / g_dst.h;
+                int dx = (int)g_rel_fx, dy = (int)g_rel_fy;
+                g_rel_fx -= dx, g_rel_fy -= dy;
+                hle_input_motion(dx, dy);
+                break;
+            }
             to_game(e.motion.x, e.motion.y, &gx, &gy);
             hle_input_mouse(WM_MOUSEMOVE, gx, gy);
             break;
@@ -773,7 +807,8 @@ void hle_screen_pump(void) {
             }
             if (g_regrab_up && e.type == SDL_MOUSEBUTTONUP) { g_regrab_up = 0; break; }
             int gx, gy, down = e.type == SDL_MOUSEBUTTONDOWN;
-            to_game(e.button.x, e.button.y, &gx, &gy);
+            if (g_rel_on) hle_input_position(&gx, &gy);   /* where the game's cursor is */
+            else to_game(e.button.x, e.button.y, &gx, &gy);
             uint32_t m = e.button.button == SDL_BUTTON_RIGHT ? (down ? WM_RBUTTONDOWN : WM_RBUTTONUP)
                        : e.button.button == SDL_BUTTON_MIDDLE ? (down ? WM_MBUTTONDOWN : WM_MBUTTONUP)
                        : (down ? WM_LBUTTONDOWN : WM_LBUTTONUP);
@@ -793,6 +828,7 @@ void hle_screen_pump(void) {
 
 /* The guest moved the cursor (SetCursorPos): move the real one with it. */
 static void warp(int x, int y) {
+    if (g_rel_on) return;                                /* no pointer to move: the cursor is the game's */
     /* the picture's size, as to_game takes the mouse back by: a Direct3D game
      * has no DirectDraw mode, and its picture is the window surface's */
     int w = g_src_w, h = g_src_h, bpp;

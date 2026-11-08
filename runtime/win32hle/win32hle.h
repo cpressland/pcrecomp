@@ -159,6 +159,8 @@ void     hle_input_key(int down, uint32_t vk, uint32_t scan);
 void     hle_input_cursor(int screen_x, int screen_y);                    /* GetCursorPos, without a message */
 void     hle_input_key_state(uint32_t vk, int down);                      /* GetKeyState, without a message */
 void     hle_input_position(int *screen_x, int *screen_y);                /* where the cursor is */
+void     hle_input_motion(int dx, int dy);       /* the mouse moved (relative): the cursor to the screen's edge, the raw count on */
+void     hle_input_raw(int *x, int *y);          /* the mouse's movement counted, as DirectInput's relative axes read it */
 uint8_t  hle_input_vk(uint32_t vk);                                       /* a key or button's state: bit 7 down */
 extern void (*hle_input_hook)(void);                                      /* after hle_input_mouse/_key: the state changed */
 uint32_t hle_window_at(int screen_x, int screen_y, int *client_x, int *client_y);
@@ -330,6 +332,7 @@ void hle_screen_bars(int blur);            /* the bars beside the picture: a blu
 extern void (*hle_screen_settings_hook)(const char *scale, int bars, int fullscreen);   /* F11/F12 changed them */
 void hle_screen_fullscreen(int on);        /* as F11 does, the settings hook told */
 void hle_screen_confine(int on);           /* hold the mouse in the picture while focused (default on) */
+void hle_screen_relative(int on);          /* ...and hold it as relative motion: DirectInput reads past the edge (default off) */
 const char *hle_screen_settings(int *bars, int *fullscreen);   /* the scaling now; bars and fullscreen if asked */
 /* A popup menu over the picture, the kind the Windows presenter opens on F10:
  * at the mouse, a submenu beside its item, the arrow keys, Enter and a click
