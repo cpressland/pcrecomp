@@ -19,6 +19,17 @@ The runtime finds a frame's ebp as record + 12 and requires that to be the
 function's own `push ebp; mov ebp, esp` frame (entry esp - 4), so a function
 whose prologue does not open with that gets no landing pad, and a throw it
 would catch is reported as uncaught rather than resumed in the wrong place.
+
+Code built for size installs the same frame through the runtime's helper:
+
+    mov eax, offset handler; call __EH_prolog      (often through the IAT)
+    __EH_prolog: push -1; push eax; push fs:[0]; mov fs:[0], esp;
+                 save ebp over its return address; lea ebp, [esp+0xC]; ret
+
+which leaves ebp = entry esp - 4 and the record at ebp - 0xC, exactly as the
+inline prologue does, so it gets landing pads the same way. The helper is
+told by the handler it is handed: a stub naming a FuncInfo. (msvcp71.dll
+opens over 500 functions so.)
 """
 import struct
 
@@ -68,6 +79,14 @@ def resume_points(md, read, insns):
     of addresses its catch funclets resume at (possibly empty: a frame with
     only unwind actions still needs no landing pad, but is reported)."""
     head = insns[:PROLOGUE_WINDOW]
+    if len(head) >= 2 and head[0].mnemonic == 'mov' and head[0].op_str.startswith('eax, 0x') \
+            and head[1].mnemonic == 'call':
+        fi = funcinfo(read, int(head[0].op_str[5:], 16))      # mov eax, handler; call __EH_prolog
+        if fi is not None:
+            out = set()
+            for f in catch_funclets(read, fi):
+                out |= funclet_returns(md, read, f)
+            return out
     if len(head) < 2 or head[0].mnemonic != 'push' or head[0].op_str != 'ebp' \
             or head[1].mnemonic != 'mov' or head[1].op_str != 'ebp, esp':
         return None
@@ -109,6 +128,12 @@ def _selftest():
     assert resume_points(md, read, insns) == {0x1050}, resume_points(md, read, insns)
     # Without push ebp; mov ebp, esp first, no landing pad.
     assert resume_points(md, read, insns[1:]) is None
+    # The same frame through __EH_prolog: mov eax, 0x2000; call [iat].
+    put(0x5000, bytes.fromhex('b800200000' 'ff1500600000' '83ec10'))
+    assert resume_points(md, read, list(md.disasm(read(0x5000, 14), 0x5000))) == {0x1050}
+    # mov eax, imm; call that is not a handler: no frame.
+    put(0x5100, bytes.fromhex('b800400000' 'e8fa0e0000'))
+    assert resume_points(md, read, list(md.disasm(read(0x5100, 10), 0x5100))) is None
     # A plain function.
     assert resume_points(md, read, list(md.disasm(bytes.fromhex('558bec33c05dc3'), 0x4000))) is None
     print('eh32 selftest: ok')
