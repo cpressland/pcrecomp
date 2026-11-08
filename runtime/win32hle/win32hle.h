@@ -158,6 +158,12 @@ void     hle_input_mouse(uint32_t message, int screen_x, int screen_y);   /* WM_
 void     hle_input_key(int down, uint32_t vk, uint32_t scan);
 void     hle_input_cursor(int screen_x, int screen_y);                    /* GetCursorPos, without a message */
 void     hle_input_key_state(uint32_t vk, int down);                      /* GetKeyState, without a message */
+void     hle_input_position(int *screen_x, int *screen_y);                /* where the cursor is */
+void     hle_input_motion(int dx, int dy);                                /* a relative mouse moved: the cursor stops at the screen's edge, the count does not */
+void     hle_input_raw(int *x, int *y);                                   /* the mouse's movement so far, edges or not (DirectInput's relative axes) */
+extern void (*hle_input_relative_hook)(int on);                           /* a game holds the mouse for its movement alone (an exclusive DirectInput mouse) */
+uint8_t  hle_input_vk(uint32_t vk);                                       /* a key or button's state: bit 7 down */
+extern void (*hle_input_hook)(void);                                      /* after hle_input_mouse/_key: the state changed */
 uint32_t hle_window_at(int screen_x, int screen_y, int *client_x, int *client_y);
 uint32_t hle_focus_window(void);
 uint32_t hle_send(uint32_t hwnd, uint32_t msg, uint32_t wParam, uint32_t lParam);   /* SendMessageA */
@@ -282,11 +288,13 @@ extern const win32hle_shim win32hle_ole32[];          /* OLE32 + OLEAUT32 */
 extern const win32hle_shim win32hle_storage[];        /* structured storage: compound files */
 extern const win32hle_shim win32hle_dsound[];         /* DirectSound on SDL audio (dsound.c) */
 extern const win32hle_shim win32hle_ddraw[];          /* DirectDraw in software (ddraw.c) */
+extern const win32hle_shim win32hle_dinput[];         /* DirectInput: the system mouse and keyboard (dinput.c) */
 /* The primary surface, for a presenter: 0 until there is one. seq changes
  * when its pixels or palette may have. */
 int  hle_dd_frame(const uint8_t **px, int *w, int *h, int *pitch, int *bpp, const uint32_t **palette, unsigned *seq);
 void hle_dd_mode(int *w, int *h, int *bpp);
 extern void (*hle_dd_primary_hook)(void);            /* the primary's pixels or palette changed (a blit, an Unlock, a Flip) */
+int  hle_dd_flipping(void);                          /* 1 inside that hook for a Flip: a frame to show, each one */
 int  hle_dd_surface_pixels(uint32_t obj, uint8_t **px, int *w, int *h, int *pitch, int *bpp);   /* 0: not a surface */
 void hle_dsound_set_master(float gain);              /* 0 mutes */
 /* A host's answer to IDirectDrawSurface::QueryInterface for an interface the
@@ -325,6 +333,7 @@ int  hle_screen_scale(const char *name);   /* sharp, smooth, crt, nearest, integ
 void hle_screen_bars(int blur);            /* the bars beside the picture: a blur of it, or black */
 extern void (*hle_screen_settings_hook)(const char *scale, int bars, int fullscreen);   /* F11/F12 changed them */
 void hle_screen_fullscreen(int on);        /* as F11 does, the settings hook told */
+void hle_screen_confine(int on);           /* hold the mouse in the picture while focused (default on) */
 const char *hle_screen_settings(int *bars, int *fullscreen);   /* the scaling now; bars and fullscreen if asked */
 /* A popup menu over the picture, the kind the Windows presenter opens on F10:
  * at the mouse, a submenu beside its item, the arrow keys, Enter and a click
