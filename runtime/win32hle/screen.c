@@ -891,8 +891,10 @@ static void present_gdi(void) { present(0); }
 
 /* The guest moved the cursor (SetCursorPos): move the real one with it. */
 static void warp(int x, int y) {
-    int w, h, bpp;
-    hle_dd_mode(&w, &h, &bpp);
+    /* the picture's size, as to_game takes the mouse back by: a Direct3D game
+     * has no DirectDraw mode, and its picture is the window surface's */
+    int w = g_src_w, h = g_src_h, bpp;
+    if (w <= 0 || h <= 0) hle_dd_mode(&w, &h, &bpp);
     if (!g_win || !g_ren || g_rel || g_dst.w <= 0 || w <= 0 || h <= 0) return;   /* relative: there is no pointer to move */
     SDL_Rect p = to_points((SDL_Rect){ g_dst.x + x * g_dst.w / w, g_dst.y + y * g_dst.h / h, 0, 0 });
     SDL_WarpMouseInWindow(g_win, p.x, p.y);
