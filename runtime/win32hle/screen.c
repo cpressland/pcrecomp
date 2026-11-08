@@ -762,8 +762,16 @@ static SDL_Rect to_points(SDL_Rect r) {
  * draws its own cursor, from its messages or DirectInput, and those stop at
  * the window's edge; the desktop's pointer would go on past it, and a click
  * there would land on another window. It is let go when the window loses
- * focus, while the popup menu is open, or on Ctrl+Cmd (Ctrl+Win); a click
- * in the window takes it back. A host turns it off with hle_screen_confine. */
+ * focus, while the popup menu is open, or on Ctrl+Cmd (Ctrl+Win, Ctrl+Super);
+ * a click in the window takes it back. A host turns it off with
+ * hle_screen_confine. */
+#if defined(__APPLE__)
+#define RELEASE_KEYS "Ctrl+Cmd"
+#elif defined(_WIN32)
+#define RELEASE_KEYS "Ctrl+Win"
+#else
+#define RELEASE_KEYS "Ctrl+Super"
+#endif
 static int g_confine = 1, g_released, g_regrab_up;
 void hle_screen_confine(int on) { g_confine = on != 0; }
 /* A game holding the mouse for its movement alone (dinput.c): while the
@@ -829,10 +837,10 @@ void hle_screen_pump(void) {
             SDL_Scancode sc = e.key.keysym.scancode;
             /* a key the host keeps for itself (a mod switch): the game never sees it */
             if (hle_screen_key_hook && hle_screen_key_hook((int)sc, e.type == SDL_KEYDOWN)) break;
-            /* Ctrl+Cmd (Ctrl+Win), as a virtual machine's: let the mouse go */
+            /* Ctrl+Cmd (Ctrl+Win, Ctrl+Super), as a virtual machine's: let the mouse go */
             if (e.type == SDL_KEYDOWN && (e.key.keysym.mod & KMOD_CTRL) && (e.key.keysym.mod & KMOD_GUI)
                 && (sc == SDL_SCANCODE_LCTRL || sc == SDL_SCANCODE_RCTRL || sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI)) {
-                if (!g_released) fprintf(stderr, "[screen] mouse let go; click the window to hold it again\n");
+                if (!g_released) fprintf(stderr, "[screen] mouse let go (" RELEASE_KEYS "); click the window to hold it again\n");
                 g_released = 1;
                 break;
             }
@@ -963,6 +971,6 @@ int hle_screen_open(const char *title, int fullscreen, int headless) {
     g_video_thread = pthread_self();
     hle_dd_primary_hook = primary_changed;
     fprintf(stderr, "[screen] %s, renderer %s, scaling %s (F12), fullscreen F11%s\n", SDL_GetCurrentVideoDriver(), ri.name,
-            k_modes[g_mode], g_confine ? ", mouse held in the picture (Ctrl+Cmd lets go)" : "");
+            k_modes[g_mode], g_confine ? ", mouse held in the picture (" RELEASE_KEYS " lets go)" : "");
     return 0;
 }
