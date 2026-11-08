@@ -110,6 +110,8 @@ void hle_vm_release(uint32_t va, uint32_t size) { munmap((void *)(uintptr_t)va, 
 void hle_vm_zero(uint32_t va, uint32_t size)    { madvise((void *)(uintptr_t)va, size, MADV_DONTNEED); }
 #endif /* !__EMSCRIPTEN__ */
 
+int hle_vm_readable(uint32_t va, uint32_t n) { return va >= GRAN && (uint64_t)va + n <= 0x100000000ull; }
+
 void *hle_heap_alloc(uint32_t n, int zero) {
     uint8_t *p = (uint8_t *)(zero ? calloc(1, (size_t)n + HDR) : malloc((size_t)n + HDR));
     if (!p) return NULL;
@@ -254,6 +256,18 @@ void hle_vm_release(uint32_t va, uint32_t size) {
     pthread_mutex_lock(&g_mem_lock);
     vm_release_locked(va);
     pthread_mutex_unlock(&g_mem_lock);
+}
+
+/* Inside one reservation (they do not touch, so a read across two would
+ * need both; none of the callers reads that far). */
+int hle_vm_readable(uint32_t va, uint32_t n) {
+    uint64_t lo = va, hi = (uint64_t)va + n;
+    int ok = 0;
+    pthread_mutex_lock(&g_mem_lock);
+    for (int i = 0; i < g_nrng && g_rng[i].lo < hi; i++)
+        if (lo >= g_rng[i].lo && hi <= g_rng[i].hi) { ok = 1; break; }
+    pthread_mutex_unlock(&g_mem_lock);
+    return ok;
 }
 
 /* Decommit: the range reads as zero when touched again. Whole host pages are

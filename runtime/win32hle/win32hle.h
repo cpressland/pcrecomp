@@ -77,6 +77,9 @@ static inline uint32_t hle_a32(int i) {
 void     hle_mem_init(void);                            /* map the guest block; idempotent */
 uint32_t hle_vm_reserve(uint32_t va, uint32_t size);
 void     hle_vm_release(uint32_t va, uint32_t size);
+/* 1 if all of [va, va+n) is reserved guest memory a read will not fault on
+ * (based); on a flat host, any address above page zero. */
+int      hle_vm_readable(uint32_t va, uint32_t n);
 void     hle_vm_zero(uint32_t va, uint32_t size);       /* decommit: reads as zero again */
 /* The heap every Heap/Local/Global block comes from: a 16-byte header before
  * each block holds its size. */
@@ -264,6 +267,9 @@ extern const win32hle_shim win32hle_kernel32[];
 extern const win32hle_shim win32hle_kernel32_ext[];   /* file I/O, Global*, .ini */
 extern const win32hle_shim win32hle_kernel32_crt[];   /* CRT startup -> WinMain */
 extern const win32hle_shim win32hle_module[];         /* modules, resources, current directory */
+extern const win32hle_shim win32hle_eh32[];           /* _CxxThrowException: guest C++ exceptions (eh32.c) */
+/* _CxxThrowException as a shim: dispatched to the guest's own catch blocks. */
+void hle_eh_throw(void);
 extern const win32hle_shim win32hle_gdi32[];
 extern const win32hle_shim win32hle_gdidc[];          /* DCs, fonts, text (SDL2_ttf) */
 uint32_t hle_gdi_surface_dc(uint8_t *px, int w, int h, int pitch, int bpp);   /* a DC drawing into those pixels */
