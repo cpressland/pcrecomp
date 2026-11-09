@@ -54,7 +54,22 @@ extern uint32_t g_ebx, g_esi, g_edi, g_ebp;
  * like __ftol receive their argument on the FPU stack from the caller, and the
  * control word persists across calls. A per-function local stack would make every
  * cross-call FPU value read as 0. */
+#ifdef RECOMP_X87_WINDOW
+/* RECOMP_X87_WINDOW: the stack as a window sliding over a ring, st(i) at
+ * g_stp[i], so a push or pop moves a pointer, not all eight registers and
+ * their shadows (thirty-odd loads and stores an fld). The runtime defining
+ * the ring (win32hle's host_lite.c) recentres the window when it nears either
+ * end: recomp_x87_rebase. Below eight deep, what a pop leaves in st(7) is
+ * whatever was there, not 0. */
+#define X87_RING 64
+extern double   g_st_ring[X87_RING];
+extern int64_t  g_sti_ring[X87_RING];
+extern double  *g_stp;          /* st(0) */
+extern int64_t *g_stip;         /* its fild-qword shadow (g_st_i64) */
+void recomp_x87_rebase(void);
+#else
 extern double   g_st[8];
+#endif
 extern int      g_fp_top;
 extern uint16_t g_fpu_cw;
 
@@ -132,7 +147,11 @@ extern const uint32_t recomp_dispatch_count;
 #endif
 #ifdef RECOMP_GENERATED_CODE
 /* x87 FPU stack is global; _fpu_cmp stays per-function (set+used within one fn) */
+#ifdef RECOMP_X87_WINDOW
+#define _st g_stp
+#else
 #define _st g_st
+#endif
 #define _fp_top g_fp_top
 #define _fpu_cw g_fpu_cw
 /* MMX file is global too. The lifter emits _mm[n] (see lift32.MMX_REGS), so the
@@ -986,6 +1005,25 @@ static inline uint32_t sse_cmp_pred(double a, double b, int p) {
 #else
 #define RECOMP_SHARED_DATA __attribute__((weak))
 #endif
+#ifdef RECOMP_X87_WINDOW
+#define g_st_i64 g_stip
+static inline void fp_push_w(double val) {
+    if (__builtin_expect(g_stp == g_st_ring, 0)) recomp_x87_rebase();
+    g_stp--, g_stip--;
+    g_stp[0] = val;
+    g_stip[0] = 0;
+    g_fp_top++;
+}
+static inline double fp_pop_w(void) {
+    double val = g_stp[0];
+    if (__builtin_expect(g_stp == g_st_ring + X87_RING - 8, 0)) recomp_x87_rebase();
+    g_stp++, g_stip++;
+    g_fp_top--;
+    return val;
+}
+#define fp_push_impl(st, top, val) fp_push_w(val)
+#define fp_pop_impl(st, top)       fp_pop_w()
+#else
 RECOMP_SHARED_DATA int64_t g_st_i64[8] = {0};
 
 static inline void fp_push_impl(double* st, int* top, double val) {
@@ -1004,6 +1042,7 @@ static inline double fp_pop_impl(double* st, int* top) {
     (*top)--;
     return val;
 }
+#endif
 
 #define fp_push(val) fp_push_impl(_st, &_fp_top, (val))
 #define fp_pop()     fp_pop_impl(_st, &_fp_top)
