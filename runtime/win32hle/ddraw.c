@@ -596,9 +596,38 @@ static void sf_EnumAttachedSurfaces(void) {              /* (this, ctx, callback
     RET(DD_OK, 3);
 }
 static void sf_EnumOverlayZOrders(void) { RET(DD_OK, 4); }
+/* A flip waits for the display's next refresh, as a full-screen Flip does on
+ * Windows (a double-buffered primary, DDFLIP_WAIT): the game draws a frame a
+ * refresh, not as many as the CPU allows, and leaves the CPU idle between.
+ * The deadline steps by a whole period, so the rate does not drift; a frame
+ * that is late does not wait, and a later one does not hurry to catch up.
+ * HLE_FLIP_HZ sets the rate (default 60; 0 does not wait), and
+ * DDFLIP_NOVSYNC does not wait either. The machine is given up for the wait,
+ * so the game's other threads run meanwhile. */
+#define DDFLIP_NOVSYNC 0x00000008u
+static uint64_t mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static void flip_pace(void) {
+    static int hz = -1;
+    static uint64_t next;
+    if (hz < 0) { const char *e = getenv("HLE_FLIP_HZ"); hz = e ? atoi(e) : 60; }
+    if (hz <= 0) return;
+    uint64_t now = mono_ns(), period = 1000000000ull / (unsigned)hz;
+    next += period;
+    if (next <= now) { next = now; return; }        /* late, or the first: no wait */
+    uint64_t wait = next - now;
+    struct timespec ts = { (time_t)(wait / 1000000000ull), (long)(wait % 1000000000ull) };
+    hle_block_begin();
+    nanosleep(&ts, NULL);
+    hle_block_end();
+}
 static void sf_Flip(void) {                              /* (this, target, flags): swap front and back pixels */
     ACCESS();
     surf_t *s = S(A32(0));
+    uint32_t flags = A32(2);
     if (s->back) {
         uint8_t *t = s->px;
         s->px = s->back->px, s->back->px = t;
@@ -606,6 +635,7 @@ static void sf_Flip(void) {                              /* (this, target, flags
         g_flipping = 1;                                  /* the presenter shows every flip (screen.c) */
         mark(s);
         g_flipping = 0;
+        if (!(flags & DDFLIP_NOVSYNC)) flip_pace();
     }
     RET(DD_OK, 3);
 }
