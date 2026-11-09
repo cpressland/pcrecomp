@@ -11,7 +11,7 @@
 
 #ifdef RECOMP_X87_WINDOW
 #define ST(i)  g_stp[i]
-#define STI(i) g_stip[i]
+#define STI(i) X87_SHADOW(g_stp)[i]
 #else
 #define ST(i)  g_st[i]
 #define STI(i) g_st_i64[i]

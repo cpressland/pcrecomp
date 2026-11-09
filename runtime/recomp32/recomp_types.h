@@ -57,16 +57,19 @@ extern uint32_t g_ebx, g_esi, g_edi, g_ebp;
 #ifdef RECOMP_X87_WINDOW
 /* RECOMP_X87_WINDOW: the stack as a window sliding over a ring, st(i) at
  * g_stp[i], so a push or pop moves a pointer, not all eight registers and
- * their shadows (thirty-odd loads and stores an fld). The runtime defining
- * the ring (win32hle's host_lite.c) recentres the window when it nears either
- * end: recomp_x87_rebase. Below eight deep, what a pop leaves in st(7) is
- * whatever was there, not 0. */
+ * their shadows (thirty-odd loads and stores an fld). The fild-qword shadows
+ * are a second ring right after the first, so one pointer reaches both
+ * (X87_SHADOW). The runtime defining the rings (win32hle's host_lite.c)
+ * recentres the window when it nears either end: recomp_x87_rebase. Below
+ * eight deep, what a pop leaves in st(7) is whatever was there, not 0.
+ * With RECOMP_LOCAL_REGS a lifted function keeps the pointer and the depth in
+ * locals, synced with the globals where the registers are, so the compiler
+ * holds them in registers rather than reloading them after every store. */
 #define X87_RING 64
-extern double   g_st_ring[X87_RING];
-extern int64_t  g_sti_ring[X87_RING];
-extern double  *g_stp;          /* st(0) */
-extern int64_t *g_stip;         /* its fild-qword shadow (g_st_i64) */
-void recomp_x87_rebase(void);
+extern double   g_x87[2 * X87_RING];    /* the values' ring, then the shadows' */
+extern double  *g_stp;                  /* st(0) */
+#define X87_SHADOW(p) ((int64_t *)((p) + X87_RING))
+double *recomp_x87_rebase(double *st0);
 #else
 extern double   g_st[8];
 #endif
@@ -126,9 +129,18 @@ extern const uint32_t recomp_dispatch_count;
 #define esi l_esi
 #define edi l_edi
 #define ebp l_ebp
-#define RECOMP_REGS_LOCALS uint32_t l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp;
-#define RECOMP_REGS_OUT() (g_eax = l_eax, g_ecx = l_ecx, g_edx = l_edx, g_ebx = l_ebx, g_esp = l_esp, g_esi = l_esi, g_edi = l_edi, g_ebp = l_ebp)
-#define RECOMP_REGS_IN() (l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp)
+#ifdef RECOMP_X87_WINDOW
+#define RECOMP_X87_LOCALS double *l_stp = g_stp; int l_fptop = g_fp_top;
+#define RECOMP_X87_OUT    , g_stp = l_stp, g_fp_top = l_fptop
+#define RECOMP_X87_IN     , l_stp = g_stp, l_fptop = g_fp_top
+#else
+#define RECOMP_X87_LOCALS
+#define RECOMP_X87_OUT
+#define RECOMP_X87_IN
+#endif
+#define RECOMP_REGS_LOCALS uint32_t l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp; RECOMP_X87_LOCALS
+#define RECOMP_REGS_OUT() (g_eax = l_eax, g_ecx = l_ecx, g_edx = l_edx, g_ebx = l_ebx, g_esp = l_esp, g_esi = l_esi, g_edi = l_edi, g_ebp = l_ebp RECOMP_X87_OUT)
+#define RECOMP_REGS_IN() (l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp RECOMP_X87_IN)
 #else
 #define RECOMP_REGS_LOCALS
 #define RECOMP_REGS_OUT() ((void)0)
@@ -147,12 +159,16 @@ extern const uint32_t recomp_dispatch_count;
 #endif
 #ifdef RECOMP_GENERATED_CODE
 /* x87 FPU stack is global; _fpu_cmp stays per-function (set+used within one fn) */
-#ifdef RECOMP_X87_WINDOW
+#if defined(RECOMP_X87_WINDOW) && defined(RECOMP_LOCAL_REGS)
+#define _st l_stp
+#define _fp_top l_fptop
+#elif defined(RECOMP_X87_WINDOW)
 #define _st g_stp
+#define _fp_top g_fp_top
 #else
 #define _st g_st
-#endif
 #define _fp_top g_fp_top
+#endif
 #define _fpu_cw g_fpu_cw
 /* MMX file is global too. The lifter emits _mm[n] (see lift32.MMX_REGS), so the
  * alias has to exist alongside the others or every MMX body fails to compile. */
@@ -1006,23 +1022,34 @@ static inline uint32_t sse_cmp_pred(double a, double b, int p) {
 #define RECOMP_SHARED_DATA __attribute__((weak))
 #endif
 #ifdef RECOMP_X87_WINDOW
-#define g_st_i64 g_stip
-static inline void fp_push_w(double val) {
-    if (__builtin_expect(g_stp == g_st_ring, 0)) recomp_x87_rebase();
-    g_stp--, g_stip--;
-    g_stp[0] = val;
-    g_stip[0] = 0;
-    g_fp_top++;
+/* Lifted code pushes and pops its own stack pointer and depth (_st and
+ * _fp_top, locals under RECOMP_LOCAL_REGS); the runtime, the globals. */
+#ifdef RECOMP_GENERATED_CODE
+#define X87_SP  _st
+#define X87_TOP _fp_top
+#else
+#define X87_SP  g_stp
+#define X87_TOP g_fp_top
+#endif
+#define g_st_i64 X87_SHADOW(X87_SP)
+static inline void fp_push_w(double **sp, int *top, double val) {
+    double *p = *sp;
+    if (__builtin_expect(p == g_x87, 0)) p = recomp_x87_rebase(p);
+    p--;
+    p[0] = val;
+    X87_SHADOW(p)[0] = 0;
+    *sp = p;
+    (*top)++;
 }
-static inline double fp_pop_w(void) {
-    double val = g_stp[0];
-    if (__builtin_expect(g_stp == g_st_ring + X87_RING - 8, 0)) recomp_x87_rebase();
-    g_stp++, g_stip++;
-    g_fp_top--;
+static inline double fp_pop_w(double **sp, int *top) {
+    double *p = *sp, val = p[0];
+    if (__builtin_expect(p == g_x87 + X87_RING - 8, 0)) p = recomp_x87_rebase(p);
+    *sp = p + 1;
+    (*top)--;
     return val;
 }
-#define fp_push_impl(st, top, val) fp_push_w(val)
-#define fp_pop_impl(st, top)       fp_pop_w()
+#define fp_push_impl(st, top, val) fp_push_w(&X87_SP, &X87_TOP, (val))
+#define fp_pop_impl(st, top)       fp_pop_w(&X87_SP, &X87_TOP)
 #else
 RECOMP_SHARED_DATA int64_t g_st_i64[8] = {0};
 

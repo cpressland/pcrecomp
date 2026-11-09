@@ -27,17 +27,15 @@
  * them, and for a win32hle host that is here. (Mirrors native32.c.) */
 uint32_t  g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp;
 #ifdef RECOMP_X87_WINDOW
-double    g_st_ring[X87_RING];
-int64_t   g_sti_ring[X87_RING];
-double   *g_stp = g_st_ring + X87_RING / 2;
-int64_t  *g_stip = g_sti_ring + X87_RING / 2;
-/* The window neared an end of the ring: its eight registers to the middle. */
-void recomp_x87_rebase(void) {
-    double  *to = g_st_ring + X87_RING / 2 - 4;
-    int64_t *toi = g_sti_ring + X87_RING / 2 - 4;
-    memmove(to, g_stp, 8 * sizeof *to);
-    memmove(toi, g_stip, 8 * sizeof *toi);
-    g_stp = to, g_stip = toi;
+double    g_x87[2 * X87_RING];
+double   *g_stp = g_x87 + X87_RING / 2;
+/* The window neared an end of the ring: its eight registers and their
+ * shadows to the middle. */
+double *recomp_x87_rebase(double *st0) {
+    double *to = g_x87 + X87_RING / 2 - 4;
+    memmove(to, st0, 8 * sizeof *to);
+    memmove(X87_SHADOW(to), X87_SHADOW(st0), 8 * sizeof(int64_t));
+    return to;
 }
 #define ST0 g_stp
 #else
@@ -98,12 +96,51 @@ static volatile unsigned g_owner_gen;   /* bumped on every take */
 
 extern volatile unsigned hle_dbg_takes;
 int hle_debug_waiters(void) { return g_waiters; }
+/* A thread letting a waiter have the machine waits for it to be taken. It
+ * spun on sched_yield until then, a system call a turn: on macOS a game that
+ * hands over often (Theme Park World, at every import while its other threads
+ * want a turn) spent a twentieth of its main thread there. Off the browser it
+ * sleeps on a condition variable instead, which the taker signals, for at
+ * most 2 ms (a missed signal costs no more than that). */
+#ifndef __EMSCRIPTEN__
+static pthread_mutex_t g_hand_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_hand_cv = PTHREAD_COND_INITIALIZER;
+static volatile int    g_hand_watchers;
+#endif
 static void mach_take(void) {
     __sync_fetch_and_add(&g_waiters, 1);
     pthread_mutex_lock(&g_mach);
     __sync_fetch_and_sub(&g_waiters, 1);
     g_owner_gen++;
     hle_dbg_takes++;
+#ifndef __EMSCRIPTEN__
+    __sync_synchronize();                     /* the new owner, before reading the watchers */
+    if (g_hand_watchers) {
+        pthread_mutex_lock(&g_hand_mx);
+        pthread_cond_broadcast(&g_hand_cv);
+        pthread_mutex_unlock(&g_hand_mx);
+    }
+#endif
+}
+/* Until another thread has taken the machine since gen, nobody waits for it,
+ * or the turn has been long enough. */
+static void hand_wait(unsigned gen) {
+#ifdef __EMSCRIPTEN__
+    for (int spins = 0; g_waiters && g_owner_gen == gen && spins < HLE_SPINS; spins++) HLE_SPIN();
+#else
+    if (!g_waiters || g_owner_gen != gen) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 2000000;
+    if (ts.tv_nsec >= 1000000000) ts.tv_sec++, ts.tv_nsec -= 1000000000;
+    pthread_mutex_lock(&g_hand_mx);
+    g_hand_watchers++;
+    __sync_synchronize();                     /* watching, before reading the owner */
+    while (g_waiters && g_owner_gen == gen)
+        if (pthread_cond_timedwait(&g_hand_cv, &g_hand_mx, &ts)) break;
+    g_hand_watchers--;
+    pthread_mutex_unlock(&g_hand_mx);
+#endif
 }
 
 typedef struct {
@@ -185,7 +222,7 @@ void hle_block_begin(void) {
  * first lets a waiter have its turn. */
 void hle_block_end(void) {
     if (!g_ms.depth) return;
-    for (int spins = 0; g_waiters && g_owner_gen == g_block_gen && spins < HLE_SPINS; spins++) HLE_SPIN();
+    hand_wait(g_block_gen);
     mach_take();
     regs_load(&g_ms.r);
 }
@@ -198,20 +235,33 @@ void hle_yield(void) {
     unsigned gen = g_owner_gen;
     hle_dbg_yields++;
     hle_block_begin();
-    int spins = 0;
-    for (; g_waiters && g_owner_gen == gen && spins < HLE_SPINS; spins++) HLE_SPIN();
-    if (g_owner_gen != gen) hle_dbg_handed++; else if (spins >= HLE_SPINS) hle_dbg_timeouts++;
+    hand_wait(gen);
+    if (g_owner_gen != gen) hle_dbg_handed++; else if (g_waiters) hle_dbg_timeouts++;
     hle_block_end();
 }
 
 /* ------------------------------------------------------------- dispatch
  * recomp_lookup searches the generated dispatch table (declared extern in
  * recomp_types.h; defined by the lifted program, or the selftest). */
+/* Every indirect call comes here first (a C++ game's virtual calls, and its
+ * imports, which miss), so a direct-mapped cache sits in front of the search:
+ * an entry is one word, the VA and the table index plus one, so a thread
+ * reads a whole entry or none. Imports (the shim range) miss at once. */
+#define LOOKUP_CACHE 4096
+#define SHIM_RANGE   0x7F000000u                /* SHIM_BASE, below */
+static uint64_t g_lookup_cache[LOOKUP_CACHE];
 recomp_func_t recomp_lookup(uint32_t va) {
+    if (va >= SHIM_RANGE) return NULL;
+    uint64_t *slot = &g_lookup_cache[((va >> 2) ^ (va >> 14)) & (LOOKUP_CACHE - 1)];
+    uint64_t e = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    if (e && (uint32_t)(e >> 32) == va) return recomp_dispatch_table[(uint32_t)e - 1].func;
     uint32_t lo = 0, hi = recomp_dispatch_count;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2, m = recomp_dispatch_table[mid].address;
-        if (m == va) return recomp_dispatch_table[mid].func;
+        if (m == va) {
+            __atomic_store_n(slot, (uint64_t)va << 32 | (mid + 1), __ATOMIC_RELAXED);
+            return recomp_dispatch_table[mid].func;
+        }
         if (m < va) lo = mid + 1; else hi = mid;
     }
     return NULL;
