@@ -17,6 +17,7 @@
  */
 #define _GNU_SOURCE
 #include <math.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,8 +210,14 @@ static void web_menu(int open) {
  * game's own time a frame fits in (10% over is let go, as an occasional
  * late frame; gaps of a tenth of a second and more are loads, not frames),
  * taken up at once and down only after a second of fitting, and never more
- * than a twentieth of a second.
- * The wait gives the machine up, so the game's other threads run. */
+ * than a twentieth of a second. It is never fewer than keeps the game near 60
+ * frames a second (HLE_MAX_FPS): a game of 1999 flips as fast as it can, as
+ * its monitor's refresh let it on Windows, and on a 120 Hz display it would
+ * otherwise draw twice the frames for the same picture. So 2 refreshes on a
+ * 120 Hz display, 3 on a 175, 1 on a 60, 75 or 90.
+ * The wait gives the machine up, so the game's other threads run; it sleeps
+ * to within 0.2 ms of the refresh and spins only the rest (it slept whole
+ * milliseconds and spun up to one, a sixteenth of the CPU at 60 a second). */
 static uint64_t g_paced_back;                              /* when the last paced frame went out */
 static int g_pace_k = 1, g_pace_hz;                         /* each frame held for k of the display's hz */
 static void pace(void) {
@@ -226,7 +233,11 @@ static void pace(void) {
         double work = (double)(now - g_paced_back) / freq;  /* the game's time since the last frame went out */
         if (work < 0.1) ema = ema > 0 ? 0.9 * ema + 0.1 * work : work;   /* longer: a load, not a frame */
         int want = (int)ceil(ema / period - 0.1), most = hz / 20 > 1 ? hz / 20 : 1;   /* never under 20 a second */
-        if (want < 1) want = 1;
+        static int max_fps = -1;
+        if (max_fps < 0) { const char *e = getenv("HLE_MAX_FPS"); max_fps = e ? atoi(e) : 60; }
+        int least = max_fps > 0 ? (int)(hz / (double)max_fps + 0.25) : 1;
+        if (least < 1) least = 1;
+        if (want < least) want = least;
         if (want > most) want = most;
         if (want > k) k = want, lower = 0;
         else if (want < k && ++lower * k >= hz) k = want, lower = 0;  /* a second of frames that fit */
@@ -234,8 +245,12 @@ static void pace(void) {
         uint64_t due = last_call + (uint64_t)(k * period * freq);
         if (now < due && due - now < (uint64_t)freq) {
             hle_block_begin();
-            uint64_t spin = (uint64_t)(0.001 * freq);    /* sleep to a millisecond short, then spin: sleeps overshoot */
-            if (due - now > spin) SDL_Delay((Uint32)((double)(due - now - spin) * 1000.0 / freq));
+            uint64_t spin = (uint64_t)(0.0002 * freq);   /* sleep to 0.2 ms short, then spin: sleeps overshoot */
+            if (due - now > spin) {
+                double s = (double)(due - now - spin) / freq;
+                struct timespec ts = { (time_t)s, (long)((s - (double)(time_t)s) * 1e9) };
+                nanosleep(&ts, NULL);
+            }
             while (SDL_GetPerformanceCounter() < due) {}
             hle_block_end();
             now = due;
