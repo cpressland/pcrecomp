@@ -6,6 +6,10 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- win32hle: the mouse wheel. SDL's wheel becomes `WM_MOUSEWHEEL` (120 a
+  notch) and DirectInput's z axis, buffered and in `GetDeviceState`
+  (`hle_input_wheel`). Theme Park World asks for a mouse with a z axis and
+  zooms with it, which it could not do before.
 - win32hle: Direct3D on the GPU through Vulkan (Linux), `d3d_vulkan.c`, the
   renderer `d3d_gpu.h` describes, made as `d3d_metal.m` is: the same shading
   (`vulkan/d3d.frag` is `d3d_raster.c`'s `shade()`), surfaces packed and
