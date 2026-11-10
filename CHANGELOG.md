@@ -13,6 +13,9 @@ versions follow [SemVer](https://semver.org/).
   main thread was the spin, 1% now.
 
 ### Fixed
+- win32hle: `CreateFontA`'s width stretches or squeezes its text as
+  `CreateFontIndirectA`'s `lfWidth` does; `gdi_selftest.c` measures both,
+  where a TrueType font is installed. (#160 follow-up)
 - win32hle: DirectInput hears of mouse input with no window to message it
   to (`hle_input_mouse` ran the input hook only after finding one), and
   `GetDeviceData` reading without a count to read up to is
