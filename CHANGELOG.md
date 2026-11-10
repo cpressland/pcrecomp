@@ -6,6 +6,12 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- win32hle screen: every flip is shown, held for the same number of the
+  display's refreshes (the fewest the game's own frame time fits, never under
+  20 a second), instead of at most one frame each 15 ms; a flip waits for the
+  next refresh, `Sleep(0)` polling sleeps, and the wait sleeps to 0.2 ms short
+  rather than spinning a millisecond. `HLE_PRESENTTRACE=1` prints frames
+  shown a second and the longest gap.
 - win32hle: a thread handing the machine over (`hle_yield`, `hle_block_end`)
   sleeps on a condition variable the taker signals, for at most 2 ms, instead
   of spinning on `sched_yield` (the browser keeps its spin). Theme Park World
@@ -56,6 +62,12 @@ versions follow [SemVer](https://semver.org/).
   shadowed.
 
 ### Added
+- win32hle: Direct3D on the GPU through Metal (macOS), `d3d_metal.m`, behind
+  the `d3d_gpu.h` seam (`hle_d3d_metal_enable`; NULL keeps `d3d_raster.c`):
+  the same triangles and state, shaded as `d3d_raster.c` shades, surfaces
+  brought back to memory before DirectDraw touches them, blits with an end on
+  the GPU done there, and a flip's frame shown without the game waiting.
+  Theme Park World on an M1 Pro: 7 to 80 frames a second.
 - win32hle screen: `hle_screen_poll_hook`, called on the window's thread at
   each pump, for a host to poll what SDL sends no events for (a game
   controller it turns into the mouse and keys), and `hle_screen_relative`.
