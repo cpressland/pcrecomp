@@ -19,6 +19,12 @@ versions follow [SemVer](https://semver.org/).
   main thread was the spin, 1% now.
 
 ### Fixed
+- win32hle: `WM_KEYDOWN`/`WM_KEYUP` set lParam's extended-key bit (24) for
+  the keys Windows marks extended: the arrows, Insert, Delete, Home, End,
+  Page Up and Down, and the right-hand Ctrl and Alt. A game reading the scan
+  code took Delete for the keypad's `.` and the arrows for its 8 4 6 2:
+  Theme Park World's Delete (clear land), arrows (turn the park) and Home
+  (back to the gates) did nothing.
 - win32hle: `CreateFontA`'s width stretches or squeezes its text as
   `CreateFontIndirectA`'s `lfWidth` does; `gdi_selftest.c` measures both,
   where a TrueType font is installed. (#160 follow-up)
