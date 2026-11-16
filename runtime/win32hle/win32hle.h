@@ -187,6 +187,21 @@ void     hle_input_position(int *screen_x, int *screen_y);                /* whe
 void     hle_input_motion(int dx, int dy);                                /* a relative mouse moved: the cursor stops at the screen's edge, the count does not */
 void     hle_input_wheel(int delta);                                      /* the wheel turned: WHEEL_DELTA (120) a notch, away from the user positive */
 int      hle_input_wheel_total(void);                                     /* the wheel's turning so far (DirectInput's z axis) */
+/* A game controller, as the host reads it (an Xbox-style pad, from SDL's
+ * GameController): DirectInput shows it as Windows shows an Xbox 360
+ * controller (dinput.c). The host sets it at each poll, holding the machine;
+ * connected 0 when there is none. */
+enum { HLE_PAD_A = 1, HLE_PAD_B = 2, HLE_PAD_X = 4, HLE_PAD_Y = 8, HLE_PAD_LB = 16, HLE_PAD_RB = 32,
+       HLE_PAD_BACK = 64, HLE_PAD_START = 128, HLE_PAD_LS = 256, HLE_PAD_RS = 512,
+       HLE_PAD_UP = 1024, HLE_PAD_DOWN = 2048, HLE_PAD_LEFT = 4096, HLE_PAD_RIGHT = 8192 };
+typedef struct {
+    int connected;
+    char name[64];
+    int16_t lx, ly, rx, ry;                  /* the sticks, -32768..32767, right and down positive */
+    uint8_t lt, rt;                          /* the triggers, 0..255 */
+    uint16_t buttons;                        /* HLE_PAD_* */
+} hle_pad_t;
+void     hle_input_pad(const hle_pad_t *pad);
 void     hle_input_raw(int *x, int *y);                                   /* the mouse's movement so far, edges or not (DirectInput's relative axes) */
 extern void (*hle_input_relative_hook)(int on);                           /* a game holds the mouse for its movement alone (an exclusive DirectInput mouse) */
 void     hle_dinput_relative_shared(int on);                              /* ...a non-exclusive one too: a game that draws its own cursor */
