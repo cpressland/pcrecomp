@@ -313,6 +313,7 @@ void     hle_gdi_window_surface(uint8_t *px, int w, int h, int pitch, int bpp);
 uint32_t hle_gdi_window_dc(void);
 int      hle_gdi_window_frame(const uint8_t **px, int *w, int *h, int *pitch, int *bpp, unsigned *seq);
 void     hle_gdi_window_touched(void);                /* drawn into directly (a movie): show it */
+void     hle_gdi_window_changed(void);                /* ...drawn into, and the host shows it (hle_screen_flip) */
 extern void (*hle_gdi_window_hook)(void);              /* called after a blit to it: screen.c presents */
 /* A DIB section's bitmap (gdi32.c's CreateDIBSection): bottom-up unless topdown. */
 uint32_t hle_gdi_dib_section(const uint8_t *bmi, uint32_t **bits);   /* CreateDIBSection from the host side */
@@ -358,6 +359,7 @@ extern const win32hle_shim win32hle_bink[];           /* binkw32 on ffmpeg (bink
  * itself as the pump hook. headless: no window (a script drives input). */
 int  hle_screen_open(const char *title, int fullscreen, int headless);
 void hle_screen_pump(void);
+void hle_screen_flip(void);                /* a host's own renderer finished a frame in the window surface: shown, paced as a flip */
 extern int (*hle_screen_key_hook)(int sdl_scancode, int down);   /* nonzero: the host took the key */
 /* Called on the window's thread at each pump, after the window's events, holding
  * the machine: a host polls what SDL has no events for here (a game controller

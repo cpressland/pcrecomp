@@ -929,6 +929,18 @@ void hle_screen_pump(void) {
 
 static void present_gdi(void) { present(0); }
 
+/* A host whose own renderer draws the game's frames into the window surface
+ * (a Direct3D 9 device's back buffer, copied down: stl-recomp) ends each with
+ * this, as a DirectDraw game flips: the frame is shown now, and paced as a
+ * flip is (pace: held to the display's refresh, near 60 a second), where a
+ * touched surface is shown as soon as it changes and the game, never made to
+ * wait, draws as many frames as the machine allows. On the window's thread;
+ * anywhere else (or with no window) it is only shown, unpaced, as before. */
+void hle_screen_flip(void) {
+    if (!g_ren || !pthread_equal(pthread_self(), g_video_thread)) { present(0); return; }
+    present(1);
+}
+
 /* The guest moved the cursor (SetCursorPos): move the real one with it. */
 static void warp(int x, int y) {
     /* the picture's size, as to_game takes the mouse back by: a Direct3D game

@@ -90,6 +90,7 @@ uint32_t hle_gdi_window_dc(void) {
 }
 void (*hle_gdi_window_hook)(void);                     /* the presenter: a blit reached the window */
 void hle_gdi_window_touched(void) { g_win_seq++; if (hle_gdi_window_hook) hle_gdi_window_hook(); }   /* a host drew into it directly */
+void hle_gdi_window_changed(void) { g_win_seq++; }    /* ...and will show it itself (hle_screen_flip) */
 int hle_gdi_window_frame(const uint8_t **px, int *w, int *h, int *pitch, int *bpp, unsigned *seq) {
     if (!g_win_px) return 0;
     *px = g_win_px, *w = g_win_w, *h = g_win_h, *pitch = g_win_pitch, *bpp = g_win_bpp;
