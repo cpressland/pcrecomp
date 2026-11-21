@@ -22,6 +22,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include "win32hle.h"
+#include "hle_os.h"
 
 #define TRANSPARENT 1
 #define OPAQUE      2
@@ -204,38 +205,10 @@ static void g_RemoveFontResourceA(void) { RET(1, 1); }
 const char *hle_font_file(const char *face, int bold, int italic) {
     static char path[512];
     for (int i = 0; i < g_nadded; i++) if (!strcasecmp(g_added[i].family, face)) return g_added[i].path;   /* ponytail: one file per face, its style whatever bold asks */
-    const char *family = "Liberation Sans", *style = bold && italic ? "Bold Italic" : bold ? "Bold" : italic ? "Italic" : "Regular";
-    if (!strncasecmp(face, "Times", 5) || !strcasecmp(face, "MS Serif") || !strcasecmp(face, "Georgia")) family = "Liberation Serif";
-    else if (!strncasecmp(face, "Courier", 7) || !strcasecmp(face, "Fixedsys") || !strcasecmp(face, "Terminal")) family = "Liberation Mono";
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' '%s:style=%s' 2>/dev/null", family, style);
-    FILE *p = popen(cmd, "r");
-    if (p) {
-        size_t n = fread(path, 1, sizeof path - 1, p);
-        pclose(p);
-        path[n] = 0;
-        if (n && access(path, R_OK) == 0) return path;
-    }
-    static const char *const dirs[] = { "/usr/share/fonts/truetype/liberation/", "/usr/share/fonts/truetype/liberation2/",
-                                        "/usr/share/fonts/liberation/", "/usr/share/fonts/liberation-sans/",
-                                        "/usr/share/fonts/TTF/", "/usr/share/fonts/truetype/dejavu/" };
-    char file[64];
-    snprintf(file, sizeof file, "%s-%s.ttf", strstr(family, "Serif") ? "LiberationSerif" : strstr(family, "Mono") ? "LiberationMono" : "LiberationSans",
-             bold && italic ? "BoldItalic" : bold ? "Bold" : italic ? "Italic" : "Regular");
-    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) {
-        snprintf(path, sizeof path, "%s%s", dirs[i], file);
-        if (access(path, R_OK) == 0) return path;
-    }
-    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) {
-        snprintf(path, sizeof path, "%s%s", dirs[i], bold ? "DejaVuSans-Bold.ttf" : "DejaVuSans.ttf");
-        if (access(path, R_OK) == 0) return path;
-    }
-    /* macOS has the faces Liberation stands in for */
-    const char *mac = strstr(family, "Serif") ? "Times New Roman" : strstr(family, "Mono") ? "Courier New" : "Arial";
-    snprintf(path, sizeof path, "/System/Library/Fonts/Supplemental/%s%s.ttf", mac,
-             bold && italic ? " Bold Italic" : bold ? " Bold" : italic ? " Italic" : "");
-    if (access(path, R_OK) == 0) return path;
-    return NULL;
+    int kind = HLE_OS_FONT_SANS;
+    if (!strncasecmp(face, "Times", 5) || !strcasecmp(face, "MS Serif") || !strcasecmp(face, "Georgia")) kind = HLE_OS_FONT_SERIF;
+    else if (!strncasecmp(face, "Courier", 7) || !strcasecmp(face, "Fixedsys") || !strcasecmp(face, "Terminal")) kind = HLE_OS_FONT_MONO;
+    return hle_os_font_file(kind, bold, italic, path, sizeof path);
 }
 static font_t *FONT(uint32_t h) {
     if (h == SYSTEM_FONT || h < FONT_BASE || h - FONT_BASE >= MAX_FONTS || !g_font[h - FONT_BASE].used) {

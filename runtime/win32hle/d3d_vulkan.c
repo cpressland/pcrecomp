@@ -49,7 +49,7 @@ int hle_d3d_vulkan_enable(void) {
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
-#include <dlfcn.h>
+#include "hle_os.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1124,10 +1124,10 @@ static int pick_device(void) {
     return best;
 }
 static int start(void) {
-    g_lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-    if (!g_lib) g_lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
-    if (!g_lib) { fprintf(stderr, "[vulkan] no Vulkan loader (libvulkan.so.1): software rendering\n"); return -1; }
-    gipa = (PFN_vkGetInstanceProcAddr)dlsym(g_lib, "vkGetInstanceProcAddr");
+    static const char *const names[] = { HLE_OS_VULKAN_LIBS };
+    g_lib = hle_os_dlopen(names, (int)(sizeof names / sizeof names[0]));
+    if (!g_lib) { fprintf(stderr, "[vulkan] no Vulkan loader (%s): software rendering\n", names[0]); return -1; }
+    gipa = (PFN_vkGetInstanceProcAddr)hle_os_dlsym(g_lib, "vkGetInstanceProcAddr");
     if (!gipa) return -1;
 #define LOAD_G(f) f = (PFN_##f)gipa(VK_NULL_HANDLE, #f);
     VK_GLOBAL(LOAD_G)

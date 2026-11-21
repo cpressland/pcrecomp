@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "win32hle.h"
+#include "selftest_os.h"
 
 const recomp_dispatch_entry_t recomp_dispatch_table[] = { { 0, 0 } };
 const uint32_t recomp_dispatch_count = 0;
@@ -28,7 +29,7 @@ int main(void) {
     win32hle_register(win32hle_kernel32);
     win32hle_register(win32hle_ole32);
     win32hle_register(win32hle_storage);
-    hle_set_drive('Z', "/");
+    hle_set_drive('Z', test_tmp());
     mach_enter();
 
     struct {
@@ -37,7 +38,7 @@ int main(void) {
         char hello[18];
         uint32_t stg, s2, stm, n;
     } *g = hle_alloc(sizeof *g);
-    wide(g->file, "Z:\\tmp\\win32hle_storage.sav");
+    wide(g->file, "Z:\\win32hle_storage.sav");
     wide(g->sub, "Scenario"), wide(g->small, "Header"), wide(g->big, "Data");
     for (int i = 0; i < (int)sizeof g->bigdata; i++) g->bigdata[i] = (uint8_t)(i * 7);
     strcpy(g->hello, "Tiberian Sun save");

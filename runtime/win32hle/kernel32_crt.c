@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include "win32hle.h"
+#include "hle_os.h"
 
 #define ERROR_INSUFFICIENT_BUFFER  122u
 #define ERROR_CALL_NOT_IMPLEMENTED 120u
@@ -328,7 +329,7 @@ static int fmt_picture(const char *f, const uint16_t *st, char *out, int cap) {
 static void now_systemtime(uint16_t *st) {
     time_t s = time(NULL);
     struct tm t;
-    localtime_r(&s, &t);
+    hle_os_localtime(&s, &t);
     st[0] = (uint16_t)(t.tm_year + 1900), st[1] = (uint16_t)(t.tm_mon + 1), st[2] = (uint16_t)t.tm_wday;
     st[3] = (uint16_t)t.tm_mday, st[4] = (uint16_t)t.tm_hour, st[5] = (uint16_t)t.tm_min, st[6] = (uint16_t)t.tm_sec, st[7] = 0;
 }

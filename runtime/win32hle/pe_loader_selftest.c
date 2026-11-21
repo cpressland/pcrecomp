@@ -13,6 +13,7 @@
 #include "pe_format.h"
 #include "pe_loader.h"
 #include "win32hle.h"
+#include "selftest_os.h"
 
 /* No guest is run here, but host_lite's recomp_lookup references the dispatch
  * table the lifted program would define; an empty one satisfies the link. */
@@ -109,7 +110,8 @@ static void build_pe(const char *path) {
 
 int main(void) {
     win32hle_register(win32hle_kernel32);           /* so hle_resolve answers */
-    const char *path = "/tmp/win32hle_mini_pe.bin";
+    char path[600];
+    test_path(path, sizeof path, "win32hle_mini_pe.bin");
     build_pe(path);
 
     pe_image img;

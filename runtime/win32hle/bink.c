@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "win32hle.h"
+#include "hle_os.h"
 
 #define BINKFILEHANDLE 0x00800000u
 
@@ -76,11 +77,11 @@ static void k_Open(void) {                               /* (name or handle, fla
     else {
         char path[1024];
         hle_host_path(ASTR(0), path, sizeof path);
-        fd = open(path, O_RDONLY | O_CLOEXEC);
+        fd = open(path, O_RDONLY | HLE_O_HOST);
         own = 1;
     }
     if (fd < 0) { g_error = "cannot open the movie"; RET(0, 2); }
-    if (pread(fd, hdr, sizeof hdr, base) < (ssize_t)sizeof hdr || memcmp(hdr, "BIK", 3) != 0) {
+    if (hle_os_pread(fd, hdr, sizeof hdr, base) < (ssize_t)sizeof hdr || memcmp(hdr, "BIK", 3) != 0) {
         if (own) close(fd);
         g_error = "not a Bink movie";
         RET(0, 2);
@@ -101,7 +102,7 @@ static void k_Open(void) {                               /* (name or handle, fla
     uint8_t *buf = len < (256u << 20) ? (uint8_t *)malloc(len) : NULL;
     size_t got = 0;
     while (buf && got < len) {
-        ssize_t r = pread(fd, buf + got, len - got, base + (off_t)got);
+        ssize_t r = hle_os_pread(fd, buf + got, len - got, base + (off_t)got);
         if (r <= 0) break;
         got += (size_t)r;
     }
@@ -242,7 +243,7 @@ static void k_Open(void) {                               /* (name or handle, fla
     else {
         char path[1024];
         hle_host_path(ASTR(0), path, sizeof path);
-        fd = open(path, O_RDONLY | O_CLOEXEC);
+        fd = open(path, O_RDONLY | HLE_O_HOST);
         own = 1;
     }
     if (fd < 0) { g_error = "cannot open the movie"; RET(0, 2); }
@@ -392,7 +393,7 @@ static void k_Open(void) {                               /* (name or handle, fla
     } else {
         char path[1024];
         hle_host_path(ASTR(0), path, sizeof path);
-        b->fd = open(path, O_RDONLY | O_CLOEXEC);
+        b->fd = open(path, O_RDONLY | HLE_O_HOST);
     }
     b->OpenFlags = flags;
     if (b->fd < 0) { g_error = "cannot open the movie"; hle_free(b); RET(0, 2); }

@@ -18,6 +18,7 @@
 #include "pe_loader.h"
 #include "win32hle.h"
 #include "host.h"
+#include "selftest_os.h"
 
 void hle_gdi_set_target(uint32_t *pixels, int w, int h);
 
@@ -181,7 +182,8 @@ int main(void) {
     VA_StretchDIBits    = hle_resolve("StretchDIBits");
     ok("user32/gdi32 shims resolve", VA_CreateWindowExA && VA_GetMessageA && VA_DispatchMessageA && VA_StretchDIBits);
 
-    const char *path = "/tmp/win32hle_host_pe.bin";
+    char path[600];
+    test_path(path, sizeof path, "win32hle_host_pe.bin");
     build_pe(path);
     ok("host boot (map + bind) ok", recomp_host_boot(path) == 0);
     ok("entry VA is the image's",   recomp_host_entry() == ENTRY_VA);

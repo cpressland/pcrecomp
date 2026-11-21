@@ -13,13 +13,14 @@
 #include "pe_format.h"
 #include "pe_loader.h"
 #include "win32hle.h"
+#include "hle_os.h"
 
 #define PAGE 0x1000u
 static uint32_t round_up(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
 
 /* Read a whole file into a malloc'd buffer; *len gets the size. NULL on error. */
 static uint8_t *slurp(const char *path, size_t *len) {
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | HLE_O_HOST);
     if (fd < 0) return NULL;
     struct stat st;
     if (fstat(fd, &st) < 0) { close(fd); return NULL; }

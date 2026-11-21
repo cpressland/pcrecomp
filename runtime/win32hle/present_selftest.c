@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <SDL2/SDL.h>
 #include "win32hle.h"
+#include "selftest_os.h"
 
 /* host_lite's recomp_lookup wants the dispatch table the lifted program would
  * define; no guest runs here, so an empty one satisfies the link. */
@@ -27,7 +28,7 @@ static int fails;
 static void ok(const char *w, int c) { if (!c) { printf("FAIL %s\n", w); fails++; } }
 
 int main(void) {
-    setenv("SDL_VIDEODRIVER", "dummy", 1);     /* headless: no screen required */
+    test_setenv("SDL_VIDEODRIVER", "dummy");   /* headless: no screen required */
 
     ok("present opens", hle_present_open("win32hle test", 8, 8) == 0);
 

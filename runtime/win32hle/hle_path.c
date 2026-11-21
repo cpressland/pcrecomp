@@ -6,7 +6,8 @@
  * case-sensitive file system in whatever case they were installed in. So:
  *
  *   - a drive letter maps to a host directory (hle_set_drive; Z: is "/", as
- *     under Wine), and a path without one is relative to the host's cwd;
+ *     under Wine, and on a Windows host has a directory per drive, Z:\C\ for C:/),
+ *     and a path without one is relative to the host's cwd;
  *   - '\\' and '/' both separate;
  *   - each component that does not exist as spelled is looked up in its
  *     directory without regard to case.
@@ -26,11 +27,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <dirent.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include "win32hle.h"
+#include "hle_os.h"
 
 static char *g_drive[26];
 
@@ -38,18 +39,18 @@ void hle_set_drive(char letter, const char *host_root) {
     int i = (letter | 0x20) - 'a';
     if (i < 0 || i >= 26) return;
     free(g_drive[i]);
-    g_drive[i] = host_root ? realpath(host_root, NULL) : NULL;
+    g_drive[i] = host_root ? hle_os_realpath(host_root) : NULL;
 }
 
 static const char *drive_root(int i) {
     if (g_drive[i]) return g_drive[i];
-    return i == 'z' - 'a' ? "" : NULL;          /* Z: is the host's root */
+    return i == 'z' - 'a' ? "" : NULL;          /* Z: is the host's root (or roots: host_path_plain) */
 }
 
 static int at_or_under(const char *path, const char *root) {
     size_t len = strlen(root);
     if (strncmp(path, root, len)) return 0;
-    if (len == 1 && root[0] == '/') return path[0] == '/';
+    if (hle_os_is_root(root)) return 1;
     return path[len] == '/' || path[len] == 0;
 }
 
@@ -86,22 +87,22 @@ static int dir_find(const char *dir, const char *want, char *name, size_t n, int
         dc_drop(slot);
         int cap = 64, cnt = 0;
         dent_t *ents = (dent_t *)malloc(sizeof *ents * (size_t)cap);
-        DIR *d = opendir(dir);
-        struct dirent *e;
-        while (d && (e = readdir(d))) {
-            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        hle_os_dir *d = hle_os_opendir(dir);
+        const char *e;
+        int t;
+        while (d && (e = hle_os_readdir(d, &t))) {
+            if (!strcmp(e, ".") || !strcmp(e, "..")) continue;
             if (cnt == cap) ents = (dent_t *)realloc(ents, sizeof *ents * (size_t)(cap *= 2));
-            ents[cnt].name = strdup(e->d_name);
-            int t = e->d_type == DT_DIR ? 1 : e->d_type == DT_UNKNOWN ? -1 : 0;
+            ents[cnt].name = strdup(e);
             if (t < 0) {
                 char full[1024];
                 struct stat st;
-                snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+                snprintf(full, sizeof full, "%s/%s", dir, e);
                 t = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
             }
             ents[cnt++].is_dir = t;
         }
-        if (d) closedir(d);
+        hle_os_closedir(d);
         g_dc[slot].dir = strdup(dir), g_dc[slot].ents = ents, g_dc[slot].n = cnt, g_dc[slot].gen = gen;
     }
     int found = 0;
@@ -119,10 +120,11 @@ static int cached_stat(const char *path, int *is_dir) {
     const char *slash = strrchr(path, '/');
     if (!slash || !slash[1]) { struct stat st; int r = stat(path, &st) == 0; if (r && is_dir) *is_dir = S_ISDIR(st.st_mode); return r; }
     char dir[1024], name[512];
-    size_t dl = (size_t)(slash - path);
+    size_t dl = (size_t)(slash - path), rl = hle_os_root_len(path);
+    if (dl < rl) dl = rl; /* file is in the root, keep the root's slash ("/" instead of ""; "C:/" instead of "C:") */
     if (dl >= sizeof dir) return 0;
     memcpy(dir, path, dl), dir[dl] = 0;
-    return dir_find(dl ? dir : "/", slash + 1, name, sizeof name, is_dir) && !strcmp(name, slash + 1);
+    return dir_find(dir, slash + 1, name, sizeof name, is_dir) && !strcmp(name, slash + 1);
 }
 
 /* Append one component to out (which holds an existing directory, or ""
@@ -141,14 +143,18 @@ static int join_component(char *out, size_t n, const char *anchor, const char *c
             }
             char *slash = strrchr(out, '/');
             if (!slash || (size_t)(slash - out) < root_len) snprintf(out, n, "%s", anchor);
-            else if (slash == out) slash[1] = 0;
+            else if ((size_t)(slash - out) < hle_os_root_len(out)) out[hle_os_root_len(out)] = 0;   /* only cut up to the root */
             else *slash = 0;
             if (!at_or_under(out, anchor)) snprintf(out, n, "%s", anchor);
             return 1;
         }
         if (!len || !strcmp(out, ".") ) { snprintf(out, n, ".."); return 1; }
         char *slash = strrchr(out, '/');
-        if (slash && strcmp(slash + 1, "..")) { if (slash == out) slash[1] = 0; else *slash = 0; return 1; }
+        if (slash && strcmp(slash + 1, "..")) {
+            if ((size_t)(slash - out) < hle_os_root_len(out)) out[hle_os_root_len(out)] = 0;   /* only cut up to the root */
+            else *slash = 0;
+            return 1;
+        }
         snprintf(out + len, n - len, "%s..", len && out[len - 1] != '/' ? "/" : "");
         return 1;
     }
@@ -173,32 +179,35 @@ static char *g_overlay_base, *g_overlay;
 
 void hle_set_overlay(const char *base, const char *overlay) {
     free(g_overlay_base), free(g_overlay);
-    g_overlay_base = base && overlay ? realpath(base, NULL) : NULL;
-    g_overlay = base && overlay ? realpath(overlay, NULL) : NULL;
+    g_overlay_base = base && overlay ? hle_os_realpath(base) : NULL;
+    g_overlay = base && overlay ? hle_os_realpath(overlay) : NULL;
     if (!g_overlay_base || !g_overlay) free(g_overlay_base), free(g_overlay), g_overlay_base = g_overlay = NULL;
 }
 
 /* host as an absolute path, if it is relative (to the cwd). */
 static void absolute(const char *host, char *out, size_t n) {
     char cwd[768];
-    if (host[0] == '/' || !getcwd(cwd, sizeof cwd)) snprintf(out, n, "%s", host);
+    if (hle_os_path_is_abs(host) || !hle_os_getcwd(cwd, sizeof cwd)) snprintf(out, n, "%s", host);
     else snprintf(out, n, "%s/%s", cwd, strcmp(host, ".") ? host : "");
     size_t l = strlen(out);
-    while (l > 1 && out[l - 1] == '/') out[--l] = 0;
+    while (l > hle_os_root_len(out) && l > 1 && out[l - 1] == '/') out[--l] = 0;
 }
 
 static int under(const char *path, const char *dir) {
     size_t l = strlen(dir);
-    if (l == 1 && dir[0] == '/') return path[0] == '/';
+    if (hle_os_is_root(dir)) return !strncmp(path, dir, l);
     return !strncmp(path, dir, l) && (path[l] == '/' || !path[l]);
 }
 
-/* Lexically canonicalize an absolute POSIX path without resolving symlinks.
+/* Lexically canonicalize an absolute host path without resolving symlinks.
  * This is used for overlay prefix classification, not filesystem isolation. */
 static int normalize_absolute(const char *path, char *out, size_t n) {
-    if (!path || path[0] != '/' || !n) return 0;
-    if (snprintf(out, n, "/") >= (int)n) return 0;
-    const char *p = path;
+    if (!path || !hle_os_path_is_abs(path) || !n) return 0;
+    size_t root_len = hle_os_root_len(path);
+    if (root_len >= n) return 0;
+    memcpy(out, path, root_len), out[root_len] = 0;
+    if (out[root_len - 1] == '\\') out[root_len - 1] = '/';
+    const char *p = path + root_len;
     while (*p == '/') p++;
     while (*p) {
         const char *e = p;
@@ -207,14 +216,14 @@ static int normalize_absolute(const char *path, char *out, size_t n) {
         if (len == 1 && p[0] == '.') {
             /* skip */
         } else if (len == 2 && p[0] == '.' && p[1] == '.') {
-            if (strcmp(out, "/")) {
+            if (strlen(out) > root_len) {
                 char *slash = strrchr(out, '/');
-                if (!slash || slash == out) snprintf(out, n, "/");
+                if (!slash || (size_t)(slash - out) < root_len) out[root_len] = 0;
                 else *slash = 0;
             }
         } else if (len) {
             size_t used = strlen(out);
-            int wrote = snprintf(out + used, n - used, "%s%.*s", used > 1 ? "/" : "", (int)len, p);
+            int wrote = snprintf(out + used, n - used, "%s%.*s", used > root_len ? "/" : "", (int)len, p);
             if (wrote < 0 || (size_t)wrote >= n - used) return 0;
         }
         p = e;
@@ -252,7 +261,7 @@ int hle_host_path_for_write(const char *guest, char *out, size_t n, int keep) {
     if (hle_overlay_of(out, ov, sizeof ov) < 0) return exists;
     for (char *s = ov + strlen(g_overlay); *s && (s = strchr(s + 1, '/')); ) {   /* mkdir -p its directory */
         *s = 0;
-        mkdir(ov, 0755);
+        hle_os_mkdir(ov);
         *s = '/';
     }
     if (keep && exists) {
@@ -293,13 +302,29 @@ static int host_path_plain(const char *guest, char *out, size_t n) {
     if (!guest) return 0;
     const char *p = guest;
     const char *anchor = NULL;
+#ifdef _WIN32
+    char host_drive[4];
+#endif
     if (((p[0] | 0x20) >= 'a' && (p[0] | 0x20) <= 'z') && p[1] == ':') {
         const char *root = drive_root((p[0] | 0x20) - 'a');
         if (!root) return 0;
         anchor = *root ? root : "/";
-        snprintf(out, n, "%s", anchor);
         p += 2;
         while (*p == '\\' || *p == '/') p++;
+#ifdef _WIN32
+        /* on windows there can be multiple roots (due to multiple drives)
+         * so when Z: is not mapped to a specific directory, it's given one
+         * top-level directory per host root.
+         * for instance: Z:\C\Users in the guest is C:/Users on the host. */
+        if (!*root) {
+            if (!(((p[0] | 0x20) >= 'a' && (p[0] | 0x20) <= 'z') && (!p[1] || p[1] == '\\' || p[1] == '/'))) return 0;
+            snprintf(host_drive, sizeof host_drive, "%c:/", p[0] & ~0x20);
+            anchor = host_drive;
+            p++;
+            while (*p == '\\' || *p == '/') p++;
+        }
+#endif
+        snprintf(out, n, "%s", anchor);
     } else if (*p == '\\' || *p == '/') {
         /* rooted without a drive: the C: drive's root, if there is one */
         const char *root = drive_root(2);
@@ -321,28 +346,35 @@ static int host_path_plain(const char *guest, char *out, size_t n) {
 }
 
 /* A host path (absolute) as the guest sees it: under a mapped drive, that
- * drive; otherwise Z: and the whole path. Backslashes. */
+ * drive; otherwise Z: and the whole path (on a Windows host, Z: and a
+ * directory for its drive: C:/Users is Z:\C\Users). Backslashes. */
 void hle_guest_path(const char *host, char *out, size_t n) {
     char abs[1024];
-    if (host[0] != '/') {
+    if (!hle_os_path_is_abs(host)) {
         char cwd[768];
-        if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
+        if (!hle_os_getcwd(cwd, sizeof cwd)) cwd[0] = 0;
         snprintf(abs, sizeof abs, "%s/%s", cwd, host);
     } else {
         snprintf(abs, sizeof abs, "%s", host);
     }
-    char *real = realpath(abs, NULL);
+    char *real = hle_os_realpath(abs);
     const char *h = real ? real : abs;
     int best = -1;
     size_t best_len = 0;
     for (int i = 0; i < 26; i++) {
         const char *r = g_drive[i];
         size_t l = r ? strlen(r) : 0;
-        if (r && !strncmp(h, r, l) && (h[l] == '/' || !h[l]) && l >= best_len) best = i, best_len = l;
+        if (r && !strncmp(h, r, l) && (h[l] == '/' || !h[l] || hle_os_is_root(r)) && l >= best_len)
+            best = i, best_len = l;
     }
     const char *rest = best >= 0 ? h + best_len : h;
-    snprintf(out, n, "%c:%s", best >= 0 ? 'A' + best : 'Z', *rest ? "" : "\\");
+    if (best >= 0) snprintf(out, n, "%c:", 'A' + best);
+#ifdef _WIN32
+    else if (hle_os_root_len(h) == 3) snprintf(out, n, "Z:\\%c", h[0] & ~0x20), rest = h + 2;
+#endif
+    else snprintf(out, n, "Z:");
     size_t k = strlen(out);
+    if (*rest != '/' && k + 1 < n) out[k++] = '\\';
     for (; *rest && k + 1 < n; rest++) out[k++] = *rest == '/' ? '\\' : *rest;
     out[k] = 0;
     free(real);

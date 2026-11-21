@@ -14,6 +14,10 @@
  * WSAAsyncSelect is served by hle_ws_poll(), which the message pump calls: a
  * socket that has become readable posts its window message, as Winsock's
  * window-message notification does.
+ *
+ * HLE_NO_SOCKETS: no host network.
+ * Setup & pure calls work fine, but socket calls will fail as if the network is down.
+ * Enabled by default on Windows hosts until such a time as networking is implemented.
  */
 #define _GNU_SOURCE
 #include <stdint.h>
@@ -21,6 +25,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <strings.h>
+#include "win32hle.h"
+
+#if defined(_WIN32) && !defined(HLE_NO_SOCKETS)
+#define HLE_NO_SOCKETS
+#endif
+
+#ifndef HLE_NO_SOCKETS
 #include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
@@ -31,11 +43,20 @@
 #include <sys/ioctl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <strings.h>
-#include "win32hle.h"
-
 #ifndef MSG_NOSIGNAL             /* macOS: the socket says so instead (SO_NOSIGPIPE, at creation) */
 #define MSG_NOSIGNAL 0
+#endif
+#else
+/* if we don't have networking headers included, trust the compiler for endianness */
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define htonl(x) __builtin_bswap32(x)
+#define htons(x) __builtin_bswap16(x)
+#else
+#define htonl(x) (x)
+#define htons(x) (x)
+#endif
+#define ntohl(x) htonl(x)
+#define ntohs(x) htons(x)
 #endif
 
 #define SOCK_BASE 0x1000u
@@ -52,7 +73,10 @@
 #define FD_WRITE 0x02u
 
 static __thread uint32_t g_wsa_error;
+#define AF_IPX_WIN    6
+#define NSPROTO_IPX   1000u
 
+#ifndef HLE_NO_SOCKETS
 static uint32_t wsa_errno(int e) {
     switch (e) {
     case EWOULDBLOCK: return WSAEWOULDBLOCK;
@@ -67,8 +91,6 @@ static uint32_t wsa_errno(int e) {
 static int fd_of(uint32_t s) { return s >= SOCK_BASE && s < SOCK_BASE + 0x10000u ? (int)(s - SOCK_BASE) : -1; }
 static uint8_t g_ipx[0x10000 / 8];                       /* which descriptors are IPX sockets */
 static int is_ipx(int fd) { return fd >= 0 && fd < 0x10000 && (g_ipx[fd >> 3] >> (fd & 7) & 1); }
-#define AF_IPX_WIN    6
-#define NSPROTO_IPX   1000u
 #define FAIL(n) do { g_wsa_error = wsa_errno(errno); RET(SOCKET_ERROR, n); } while (0)
 
 /* sockaddr_in is laid out the same on both (family is a little-endian u16). */
@@ -98,6 +120,7 @@ static void ipx_to_guest(const struct sockaddr_in *h, uint8_t *g, int self) {
     else memcpy(g + 6, &h->sin_addr, 4);                 /* a sender's: its address, then 00 00 */
     memcpy(g + 12, &h->sin_port, 2);
 }
+#endif /* !HLE_NO_SOCKETS */
 
 static void w_WSAStartup(void) {                         /* (version, &WSADATA) */
     uint8_t *d = (uint8_t *)APTR(1);
@@ -115,6 +138,7 @@ static void w_WSACleanup(void)     { RET(0, 0); }
 static void w_WSAGetLastError(void){ RET(g_wsa_error, 0); }
 static void w_WSASetLastError(void){ g_wsa_error = A32(0); RETV(1); }
 
+#ifndef HLE_NO_SOCKETS
 static void w_socket(void) {                             /* (af, type, protocol) */
     int af = (int)A32(0), type = (int)A32(1), proto = (int)A32(2);
     int ipx = af == AF_IPX_WIN && type == 2 && (uint32_t)proto == NSPROTO_IPX;
@@ -260,11 +284,21 @@ static void w_getsockname(void) {
     if (A32(2)) MEM32(A32(2)) = ipx ? 14 : 16;
     RET(0, 3);
 }
+#endif /* !HLE_NO_SOCKETS */
 
 static void w_htonl(void) { RET(htonl(A32(0)), 1); }
 static void w_htons(void) { RET(htons((uint16_t)A32(0)), 1); }
 static void w_ntohl(void) { RET(ntohl(A32(0)), 1); }
 static void w_ntohs(void) { RET(ntohs((uint16_t)A32(0)), 1); }
+#ifdef HLE_NO_SOCKETS
+/* parse a dotted IPv4 address in network order, INADDR_NONE (0xFFFFFFFFu) if it can't be parsed */
+static uint32_t inet_addr(const char *s) {
+    unsigned a, b, c, d;
+    char end;
+    if (sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &end) != 4 || a > 255 || b > 255 || c > 255 || d > 255) return 0xFFFFFFFFu;
+    return a | b << 8 | c << 16 | d << 24;
+}
+#endif
 static void w_inet_addr(void) { RET(ASTR(0) ? inet_addr(ASTR(0)) : 0xFFFFFFFFu, 1); }
 static void w_inet_ntoa(void) {                          /* (in_addr by value) */
     static __thread char *buf;                           /* guest memory: the guest reads it */
@@ -273,6 +307,7 @@ static void w_inet_ntoa(void) {                          /* (in_addr by value) *
     snprintf(buf, 16, "%u.%u.%u.%u", a & 255, (a >> 8) & 255, (a >> 16) & 255, a >> 24);
     RETP(buf, 1);
 }
+#ifndef HLE_NO_SOCKETS
 static void w_gethostname(void) {
     if (gethostname(ASTR(0), A32(1)) != 0) FAIL(2);
     RET(0, 2);
@@ -333,7 +368,6 @@ static void w_WSAAsyncSelect(void) {                     /* (s, hwnd, msg, event
     g_async[slot].hwnd = A32(1), g_async[slot].msg = A32(2), g_async[slot].events = A32(3);
     RET(0, 4);
 }
-static void w_WSACancelAsyncRequest(void) { g_wsa_error = WSAEINVAL; RET(SOCKET_ERROR, 1); }
 
 /* From the message pump: a readable socket posts its message (once per
  * poll, as level-triggered FD_READ re-posts after each recv). */
@@ -345,6 +379,8 @@ void hle_ws_poll(void) {
             hle_post_message(g_async[i].hwnd, g_async[i].msg, g_async[i].s, FD_READ);
     }
 }
+#endif /* !HLE_NO_SOCKETS */
+static void w_WSACancelAsyncRequest(void) { g_wsa_error = WSAEINVAL; RET(SOCKET_ERROR, 1); }
 
 /* EnumProtocolsA(protocols, buffer, &length): what IPXEmu answers, the IPX
  * entry (when IPX is asked for, or everything is), as a PROTOCOL_INFOA. */
@@ -365,6 +401,7 @@ static void w_EnumProtocolsA(void) {
  * NULL timeout waits for ever. Done with poll(); each set is rewritten to hold
  * only its ready sockets, and the total is returned. A wait gives the
  * machine to the other guest threads. */
+#ifndef HLE_NO_SOCKETS
 static void w_select(void) {
     uint32_t set[3] = { A32(1), A32(2), A32(3) }, tv = A32(4);
     struct pollfd pf[192];
@@ -397,6 +434,41 @@ static void w_select(void) {
     for (int k = 0; k < 3; k++) if (set[k]) MEM32(set[k]) = out[k];
     RET(total, 5);
 }
+#else
+/* no host network (HLE_NO_SOCKETS)!
+ * no socket can be made, so socket() fails with WSAENETDOWN and other socket
+ * functions fail with WSAENOTSOCK.
+ */
+#define WSAENETDOWN 10050u
+void (*hle_ws_broadcast_hook)(int fd, const void *buf, uint32_t len, unsigned port);
+void hle_ws_poll(void) {}
+static void w_socket(void) { g_wsa_error = WSAENETDOWN; RET(INVALID_SOCKET, 3); }
+#define NOT_A_SOCKET(fn, argc) static void fn(void) { g_wsa_error = WSAENOTSOCK; RET(SOCKET_ERROR, argc); }
+NOT_A_SOCKET(w_closesocket, 1)
+NOT_A_SOCKET(w_bind, 3)
+NOT_A_SOCKET(w_connect, 3)
+NOT_A_SOCKET(w_listen, 2)
+NOT_A_SOCKET(w_send, 4)
+NOT_A_SOCKET(w_sendto, 6)
+NOT_A_SOCKET(w_recv, 4)
+NOT_A_SOCKET(w_recvfrom, 6)
+NOT_A_SOCKET(w_setsockopt, 5)
+NOT_A_SOCKET(w_getsockopt, 5)
+NOT_A_SOCKET(w_ioctlsocket, 3)
+NOT_A_SOCKET(w_getsockname, 3)
+NOT_A_SOCKET(w_WSAAsyncSelect, 4)
+static void w_select(void) {
+    for (int k = 1; k <= 3; k++)
+        if (A32(k) && MEM32(A32(k))) { g_wsa_error = WSAENOTSOCK; RET(SOCKET_ERROR, 5); }
+    RET(0, 5);
+}
+static void w_gethostname(void) {
+    if (!ASTR(0) || A32(1) < 10) { g_wsa_error = 10014u; RET(SOCKET_ERROR, 2); }   /* WSAEFAULT */
+    strcpy(ASTR(0), "localhost");
+    RET(0, 2);
+}
+static void w_gethostbyname(void) { g_wsa_error = WSAHOST_NOT_FOUND; RET(0, 1); }
+#endif /* HLE_NO_SOCKETS */
 
 #define SHIM2(ord, name, fn) { "wsock32.dll#" #ord, fn }, { name, fn }
 const win32hle_shim win32hle_wsock32[] = {

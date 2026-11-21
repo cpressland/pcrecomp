@@ -20,9 +20,7 @@
 #include <sched.h>
 #include <sys/stat.h>
 #include "win32hle.h"
-#ifdef __APPLE__
-#include <mach-o/dyld.h>   /* _NSGetExecutablePath */
-#endif
+#include "hle_os.h"
 
 #define HEAP_ZERO_MEMORY            0x00000008u
 #define HEAP_REALLOC_IN_PLACE_ONLY  0x00000010u
@@ -53,17 +51,8 @@ int hle_exe_path(char *out, size_t n) {
     if (n < 16) return 0;
     strcpy(out, stat("/opfs/save", &st) == 0 ? "/opfs/save/ra2" : "/save/ra2");
     return 1;
-#elif defined(__APPLE__)
-    char raw[4096], real[4096];
-    uint32_t len = sizeof raw;
-    if (!n || _NSGetExecutablePath(raw, &len) != 0 || !realpath(raw, real) || strlen(real) >= n) return 0;
-    memcpy(out, real, strlen(real) + 1);
-    return 1;
 #else
-    ssize_t len = n ? readlink("/proc/self/exe", out, n - 1) : -1;
-    if (len <= 0) return 0;
-    out[len] = 0;
-    return 1;
+    return hle_os_exe_path(out, n);
 #endif
 }
 static const char g_default_cmdline[] = "game.exe";

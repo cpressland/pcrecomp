@@ -372,7 +372,7 @@ void d3d_raster_line(const rstate_t *st, const rvert_t *a, const rvert_t *b) {
  * triangle in order, clipped to its band: the result is the same as drawing
  * them one at a time, and each band's pixels have one writer. */
 #include <pthread.h>
-#include <unistd.h>
+#include "hle_os.h"
 
 typedef struct { int state, line; rvert_t v[3]; } rcmd_t;
 static rcmd_t *g_cmd;
@@ -420,7 +420,7 @@ static void pool(void) {
 #ifdef __EMSCRIPTEN__
     long n = 1;                                          /* a browser's worker pool is fixed at load: draw here */
 #else
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    long n = hle_os_cpu_count();
 #endif
     const char *e = getenv("HLE_D3DTHREADS");
     if (e) n = atol(e);

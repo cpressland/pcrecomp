@@ -15,17 +15,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
-#include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/mman.h>
 #include "win32hle.h"
-
-#ifdef __APPLE__                 /* struct stat's times by their BSD names */
-#define st_mtim st_mtimespec
-#define st_atim st_atimespec
-#endif
+#include "hle_os.h"
 
 #define INVALID_HANDLE  0xFFFFFFFFu
 #define ERROR_FILE_NOT_FOUND    2u
@@ -139,7 +132,7 @@ static void k_CreateFileA(void) {
         hle_set_last_error(ERROR_ACCESS_DENIED);    /* a directory, without FILE_FLAG_BACKUP_SEMANTICS */
         RET(INVALID_HANDLE, 7);
     }
-    int fd = open(path, fl | O_CLOEXEC, 0644);
+    int fd = open(path, fl | HLE_O_HOST, 0644);
     if (hle_filetrace())
         fprintf(stderr, "[file] CreateFileA \"%s\" -> %s %s\n", name, path, fd >= 0 ? "ok" : strerror(errno));
     if (fd < 0) { hle_set_last_error(errno_to_win(errno)); RET(INVALID_HANDLE, 7); }
@@ -234,14 +227,14 @@ static void put_systemtime(uint32_t st, const struct tm *t, int ms) {
 static void k_GetSystemTime(void) {
     struct timespec ts; struct tm t;
     clock_gettime(CLOCK_REALTIME, &ts);
-    gmtime_r(&ts.tv_sec, &t);
+    hle_os_gmtime(&ts.tv_sec, &t);
     put_systemtime(A32(0), &t, (int)(ts.tv_nsec / 1000000));
     RETV(1);
 }
 static void k_GetLocalTime(void) {
     struct timespec ts; struct tm t;
     clock_gettime(CLOCK_REALTIME, &ts);
-    localtime_r(&ts.tv_sec, &t);
+    hle_os_localtime(&ts.tv_sec, &t);
     put_systemtime(A32(0), &t, (int)(ts.tv_nsec / 1000000));
     RETV(1);
 }
@@ -253,7 +246,7 @@ static void k_GetSystemTimeAsFileTime(void) {
 static void k_FileTimeToSystemTime(void) {               /* (&ft, &st) */
     uint64_t ft = get_ft(A32(0));
     time_t s = (time_t)(ft / 10000000ull - EPOCH_DIFF);
-    struct tm t; gmtime_r(&s, &t);
+    struct tm t; hle_os_gmtime(&s, &t);
     put_systemtime(A32(1), &t, (int)(ft % 10000000ull / 10000u));
     RET(1, 2);
 }
@@ -262,14 +255,11 @@ static void k_SystemTimeToFileTime(void) {               /* (&st, &ft) */
     struct tm t = { 0 };
     t.tm_year = w[0] - 1900, t.tm_mon = w[1] - 1, t.tm_mday = w[3];
     t.tm_hour = w[4], t.tm_min = w[5], t.tm_sec = w[6];
-    time_t s = timegm(&t);
+    time_t s = hle_os_timegm(&t);
     put_ft(A32(1), unix_to_ft(s, (long)w[7] * 1000000L));
     RET(1, 2);
 }
-static int32_t tz_bias_s(void) {                         /* local - UTC, seconds */
-    time_t now = time(NULL); struct tm t; localtime_r(&now, &t);
-    return (int32_t)t.tm_gmtoff;
-}
+static int32_t tz_bias_s(void) { return (int32_t)hle_os_utc_offset(); }   /* local - UTC, seconds */
 static void k_FileTimeToLocalFileTime(void) { put_ft(A32(1), get_ft(A32(0)) + (int64_t)tz_bias_s() * 10000000); RET(1, 2); }
 static void k_LocalFileTimeToFileTime(void) { put_ft(A32(1), get_ft(A32(0)) - (int64_t)tz_bias_s() * 10000000); RET(1, 2); }
 static void k_CompareFileTime(void) {
@@ -281,13 +271,13 @@ static void k_DosDateTimeToFileTime(void) {              /* (date, time, &ft) */
     struct tm t = { 0 };
     t.tm_year = (int)(d >> 9) + 80, t.tm_mon = (int)((d >> 5) & 15) - 1, t.tm_mday = (int)(d & 31);
     t.tm_hour = (int)(tm_ >> 11), t.tm_min = (int)((tm_ >> 5) & 63), t.tm_sec = (int)(tm_ & 31) * 2;
-    put_ft(A32(2), unix_to_ft(timegm(&t), 0));
+    put_ft(A32(2), unix_to_ft(hle_os_timegm(&t), 0));
     RET(1, 3);
 }
 static void k_FileTimeToDosDateTime(void) {              /* (&ft, &date, &time) */
     uint64_t ft = get_ft(A32(0));
     time_t s = (time_t)(ft / 10000000ull - EPOCH_DIFF);
-    struct tm t; gmtime_r(&s, &t);
+    struct tm t; hle_os_gmtime(&s, &t);
     if (A32(1)) MEM16(A32(1)) = (uint16_t)(((t.tm_year - 80) << 9) | ((t.tm_mon + 1) << 5) | t.tm_mday);
     if (A32(2)) MEM16(A32(2)) = (uint16_t)((t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec / 2));
     RET(1, 3);
@@ -302,21 +292,25 @@ static void k_GetFileTime(void) {                        /* (h, &create, &access
     int fd = fd_of(A32(0));
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0) { hle_set_last_error(ERROR_INVALID_HANDLE); RET(0, 4); }
-    put_ft(A32(1), unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
-    put_ft(A32(2), unix_to_ft(st.st_atim.tv_sec, st.st_atim.tv_nsec));
-    put_ft(A32(3), unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
+    struct timespec m, a;
+    hle_os_stat_times(&st, &m, &a);
+    put_ft(A32(1), unix_to_ft(m.tv_sec, m.tv_nsec));
+    put_ft(A32(2), unix_to_ft(a.tv_sec, a.tv_nsec));
+    put_ft(A32(3), unix_to_ft(m.tv_sec, m.tv_nsec));
     RET(1, 4);
 }
 static void k_SetFileTime(void) {                        /* (h, &create, &access, &write) */
     int fd = fd_of(A32(0));
-    struct timespec ts[2] = { { 0, UTIME_OMIT }, { 0, UTIME_OMIT } };
+    struct timespec ts[2];
+    int given[2] = { 0, 0 };
     for (int i = 0; i < 2; i++) {
         uint32_t at = A32(2 + i);
         if (!at) continue;
         uint64_t ft = get_ft(at);
         ts[i].tv_sec = (time_t)(ft / 10000000ull - EPOCH_DIFF), ts[i].tv_nsec = (long)(ft % 10000000ull) * 100;
+        given[i] = 1;
     }
-    RET(fd >= 0 && futimens(fd, ts) == 0 ? 1u : 0u, 4);
+    RET(fd >= 0 && hle_os_set_file_times(fd, given[0] ? &ts[0] : NULL, given[1] ? &ts[1] : NULL) == 0 ? 1u : 0u, 4);
 }
 
 static uint32_t attrs_of(const struct stat *st) {
@@ -331,9 +325,11 @@ static void k_GetFileInformationByHandle(void) {         /* (h, &BY_HANDLE_FILE_
     if (fd < 0 || fstat(fd, &st) != 0) { hle_set_last_error(ERROR_INVALID_HANDLE); RET(0, 2); }
     memset(hle_ptr(o), 0, 52);
     MEM32(o) = attrs_of(&st);
-    put_ft(o + 4, unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
-    put_ft(o + 12, unix_to_ft(st.st_atim.tv_sec, st.st_atim.tv_nsec));
-    put_ft(o + 20, unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
+    struct timespec m, a;
+    hle_os_stat_times(&st, &m, &a);
+    put_ft(o + 4, unix_to_ft(m.tv_sec, m.tv_nsec));
+    put_ft(o + 12, unix_to_ft(a.tv_sec, a.tv_nsec));
+    put_ft(o + 20, unix_to_ft(m.tv_sec, m.tv_nsec));
     MEM32(o + 28) = (uint32_t)st.st_dev;
     MEM32(o + 32) = (uint32_t)((uint64_t)st.st_size >> 32), MEM32(o + 36) = (uint32_t)st.st_size;
     MEM32(o + 40) = (uint32_t)st.st_nlink;
@@ -354,7 +350,7 @@ static void k_SetFileAttributesA(void) { char path[1024]; RET(hle_host_path(ASTR
 static void k_CreateDirectoryA(void) {
     char path[1024];
     hle_host_path_for_write(ASTR(0), path, sizeof path, 0);
-    if (mkdir(path, 0755) == 0) { hle_path_changed(); RET(1, 2); }
+    if (hle_os_mkdir(path) == 0) { hle_path_changed(); RET(1, 2); }
     hle_set_last_error(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno_to_win(errno));
     RET(0, 2);
 }
@@ -386,7 +382,7 @@ static void k_CopyFileA(void) {                          /* (src, dst, failIfExi
     int dst_exists = hle_host_path(ASTR(1), b, sizeof b);
     hle_host_path_for_write(ASTR(1), b, sizeof b, 0);
     if (A32(2) && dst_exists) { hle_set_last_error(ERROR_FILE_EXISTS); RET(0, 3); }
-    int in = open(a, O_RDONLY | O_CLOEXEC), out = in >= 0 ? open(b, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644) : -1;
+    int in = open(a, O_RDONLY | HLE_O_HOST), out = in >= 0 ? open(b, O_WRONLY | O_CREAT | O_TRUNC | HLE_O_HOST, 0644) : -1;
     if (out >= 0) hle_path_changed();
     if (in >= 0 && out >= 0) {
         char buf[65536];
@@ -409,7 +405,7 @@ static void k_CopyFileA(void) {                          /* (src, dst, failIfExi
  * name winning. */
 typedef struct { char name[260]; int base; } found_t;
 typedef struct {
-    DIR *d, *base;
+    hle_os_dir *d, *base;
     char dir[1024], base_dir[1024], mask[260];
     int dots;
     found_t *names;
@@ -417,8 +413,8 @@ typedef struct {
 } hfind;
 static void find_closer(void *o) {
     hfind *f = (hfind *)o;
-    if (f->d) closedir(f->d);
-    if (f->base) closedir(f->base);
+    hle_os_closedir(f->d);
+    hle_os_closedir(f->base);
     free(f->names);
     free(f);
 }
@@ -454,9 +450,11 @@ static void fill_find(uint32_t o, const char *dir, const char *name) {
     memset(hle_ptr(o), 0, 320);
     if (stat(full, &st) == 0) {
         MEM32(o) = attrs_of(&st);
-        put_ft(o + 4, unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
-        put_ft(o + 12, unix_to_ft(st.st_atim.tv_sec, st.st_atim.tv_nsec));
-        put_ft(o + 20, unix_to_ft(st.st_mtim.tv_sec, st.st_mtim.tv_nsec));
+        struct timespec m, a;
+        hle_os_stat_times(&st, &m, &a);
+        put_ft(o + 4, unix_to_ft(m.tv_sec, m.tv_nsec));
+        put_ft(o + 12, unix_to_ft(a.tv_sec, a.tv_nsec));
+        put_ft(o + 20, unix_to_ft(m.tv_sec, m.tv_nsec));
         MEM32(o + 28) = (uint32_t)((uint64_t)st.st_size >> 32), MEM32(o + 32) = (uint32_t)st.st_size;
     }
     strncpy((char *)hle_ptr(o + 44), name, 259);
@@ -467,13 +465,13 @@ static int listed(const hfind *f, const char *name) {
         if (!strcasecmp(f->names[i].name, name)) return 1;
     return 0;
 }
-static void list_dir(hfind *f, DIR *d, int base) {
-    struct dirent *e;
-    while (d && (e = readdir(d))) {
-        int dot = !strcmp(e->d_name, ".") || !strcmp(e->d_name, "..");
-        if ((dot && (!f->dots || base)) || !wild(f->mask, e->d_name) || (base && listed(f, e->d_name))) continue;
+static void list_dir(hfind *f, hle_os_dir *d, int base) {
+    const char *e;
+    while (d && (e = hle_os_readdir(d, NULL))) {
+        int dot = !strcmp(e, ".") || !strcmp(e, "..");
+        if ((dot && (!f->dots || base)) || !wild(f->mask, e) || (base && listed(f, e))) continue;
         if (f->n % 64 == 0) f->names = (found_t *)realloc(f->names, sizeof *f->names * (size_t)(f->n + 64));
-        snprintf(f->names[f->n].name, sizeof f->names[0].name, "%s", e->d_name);
+        snprintf(f->names[f->n].name, sizeof f->names[0].name, "%s", e);
         f->names[f->n++].base = base;
     }
 }
@@ -497,7 +495,7 @@ static void k_FindFirstFileA(void) {                     /* (pattern, &data) */
     if (!gdir[0]) snprintf(gdir, sizeof gdir, ".");
     hle_host_path_base(gdir, f->dir, sizeof f->dir);
     char overlay_dir[1024];
-    if (hle_overlay_of(f->dir, overlay_dir, sizeof overlay_dir) == 1 && (f->base = opendir(f->dir))) {
+    if (hle_overlay_of(f->dir, overlay_dir, sizeof overlay_dir) == 1 && (f->base = hle_os_opendir(f->dir))) {
         snprintf(f->base_dir, sizeof f->base_dir, "%s", f->dir);
         snprintf(f->dir, sizeof f->dir, "%s", overlay_dir);
     }
@@ -519,7 +517,7 @@ static void k_FindFirstFileA(void) {                     /* (pattern, &data) */
         hle_set_last_error(ERROR_FILE_NOT_FOUND);
         RET(INVALID_HANDLE, 2);
     }
-    f->d = opendir(f->dir);
+    f->d = hle_os_opendir(f->dir);
     list_dir(f, f->d, 0);
     list_dir(f, f->base, 1);
     if (f->n) qsort(f->names, (size_t)f->n, sizeof *f->names, by_name);
@@ -550,25 +548,23 @@ static void k_GetDiskFreeSpaceA(void) {                  /* (root, &spc, &bps, &
     if (A32(4)) MEM32(A32(4)) = 0xFFFFFu;
     RET(1, 5);
 }
-/* Checked before any guest output is written: Windows reports byte counts. */
-static int disk_mul_u64(uint64_t a, uint64_t b, uint64_t *out) {
-    if (a && b > UINT64_MAX / a) return 0;
-    *out = a * b; return 1;
-}
-
 static void k_GetDiskFreeSpaceExA(void) {
     const char *guest = ASTR(0);
     uint32_t outputs[3] = { A32(1), A32(2), A32(3) };
-    char current[1024], guest_current[1024], root[4], host[1024];
+    char current[1024], guest_current[1024], root[8], host[1024];
     for (int i = 0; i < 3; ++i)
         if (outputs[i] && outputs[i] > UINT32_MAX - 7u) {
             hle_set_last_error(87u); RET(0, 4);
         }
     if (!guest) {
-        if (!getcwd(current, sizeof current)) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
+        if (!hle_os_getcwd(current, sizeof current)) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
         hle_guest_path(current, guest_current, sizeof guest_current);
         if (!guest_current[0] || guest_current[1] != ':') { hle_set_last_error(120u); RET(0, 4); }
-        root[0] = guest_current[0]; root[1] = ':'; root[2] = '\\'; root[3] = 0; guest = root;
+        size_t rl = 3;
+#ifdef _WIN32
+        if (guest_current[0] == 'Z' && guest_current[3] && guest_current[4] == '\\') rl = 5;   /* use Z:\<drive>\ as root on windows (see: hle_path.c) */
+#endif
+        snprintf(root, sizeof root, "%.*s", (int)rl, guest_current); guest = root;
     }
     if ((guest[0] == '\\' || guest[0] == '/') &&
         (guest[1] == '\\' || guest[1] == '/')) {
@@ -581,14 +577,9 @@ static void k_GetDiskFreeSpaceExA(void) {
     struct stat st;
     if (stat(host, &st) != 0) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
     if (!S_ISDIR(st.st_mode)) { hle_set_last_error(267u); RET(0, 4); }
-    struct statvfs info;
-    if (statvfs(host, &info) != 0) { hle_set_last_error(errno_to_win(errno)); RET(0, 4); }
-    uint64_t unit = info.f_frsize ? info.f_frsize : info.f_bsize;
     uint64_t values[3];
-    if (!unit || !disk_mul_u64(unit, info.f_bavail, &values[0]) ||
-        !disk_mul_u64(unit, info.f_blocks, &values[1]) ||
-        !disk_mul_u64(unit, info.f_bfree, &values[2])) {
-        hle_set_last_error(534u); RET(0, 4);
+    if (hle_os_disk_space(host, &values[0], &values[1], &values[2]) != 0) {
+        hle_set_last_error(errno == EOVERFLOW ? 534u : errno_to_win(errno)); RET(0, 4);   /* ERROR_ARITHMETIC_OVERFLOW */
     }
     for (int i = 0; i < 3; ++i) if (outputs[i]) memcpy(hle_ptr(outputs[i]), &values[i], 8);
     RET(1, 4);
@@ -683,7 +674,7 @@ static uint32_t lopen_common(const char *name, int fl, int create) {
     /* a write goes to a mod's overlay, as CreateFileA's does */
     if (create || fl != O_RDONLY) hle_host_path_for_write(name, path, sizeof path, !create);
     else hle_host_path(name, path, sizeof path);
-    int fd = open(path, fl | O_CLOEXEC | (create ? (O_CREAT | O_TRUNC) : 0), 0644);
+    int fd = open(path, fl | HLE_O_HOST | (create ? (O_CREAT | O_TRUNC) : 0), 0644);
     if (create && fd >= 0) hle_path_changed();
     if (hle_filetrace()) fprintf(stderr, "[file] _lopen \"%s\" -> %s %s\n", name, path, fd >= 0 ? "ok" : strerror(errno));
     if (fd < 0) { hle_set_last_error(errno_to_win(errno)); return INVALID_HANDLE; }
@@ -754,7 +745,7 @@ static void k_GetFullPathNameA(void) {
     char abs[1024];
     if (name && (name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':')))
         snprintf(abs, sizeof abs, "%s", name);
-    else { char cwd[768]; if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0; snprintf(abs, sizeof abs, "%s/%s", cwd, name ? name : ""); }
+    else { char cwd[768]; if (!hle_os_getcwd(cwd, sizeof cwd)) cwd[0] = 0; snprintf(abs, sizeof abs, "%s/%s", cwd, name ? name : ""); }
     char *buf = ASTR(2); uint32_t n = A32(1);
     if (buf && n) { strncpy(buf, abs, n - 1); buf[n - 1] = 0; }
     if (A32(3) && buf) {
@@ -800,25 +791,13 @@ static void k_MapViewOfFile(void) {                      /* (hMap, access, offHi
     if (!m || off >= m->size) { hle_set_last_error(6); RET(0, 5); }
     uint64_t len = A32(4) ? A32(4) : m->size - off;
     int copy = A32(1) == 1;                                /* FILE_MAP_COPY */
-    int prot = PROT_READ | (m->writable || copy ? PROT_WRITE : 0);
     /* the view lives in guest memory: reserve it there, then put the file over
      * it (a pagefile mapping is the reservation's own zeroed pages) */
     uint32_t va = hle_vm_reserve(0, (uint32_t)len);
     if (!va) { hle_set_last_error(8); RET(0, 5); }       /* ERROR_NOT_ENOUGH_MEMORY */
-#ifdef __EMSCRIPTEN__
-    /* no mmap of a file at an address: the view is a copy (writes to it do
-     * not reach the file) */
-    (void)prot;
-    for (size_t done = 0; m->fd >= 0 && done < len;) {
-        ssize_t r = pread(m->fd, (uint8_t *)hle_ptr(va) + done, len - done, (off_t)(off + done));
-        if (r <= 0) break;
-        done += (size_t)r;
-    }
-#else
-    if (m->fd >= 0 && mmap(hle_ptr(va), len, prot, MAP_FIXED | (copy ? MAP_PRIVATE : MAP_SHARED), m->fd, (off_t)off) == MAP_FAILED) {
+    if (m->fd >= 0 && hle_os_map_file(hle_ptr(va), (size_t)len, m->fd, off, m->writable, copy) != 0) {
         hle_vm_release(va, (uint32_t)len); hle_set_last_error(8); RET(0, 5);
     }
-#endif
     for (int i = 0; i < MAX_VIEWS; i++) if (!g_views[i].addr) { g_views[i].addr = va, g_views[i].len = (uint32_t)len; break; }
     RET(va, 5);
 }

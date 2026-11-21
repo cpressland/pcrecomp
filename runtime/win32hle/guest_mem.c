@@ -4,7 +4,8 @@
  * objects, surfaces) and per-thread scratch. See win32hle.h.
  *
  * Flat (HLE_FLAT: any 32-bit host): a VA is a host address, so pages
- * are mmaps where the guest asks for them and the heap is malloc.
+ * are the OS's own (hle_os_map) where the guest asks for them and the heap is
+ * malloc. The OS calls themselves are in hle_os.h.
  *
  * Based (a 64-bit host): the guest's 4 GB is one mapping at g_mem_base, and
  * nothing outside it has a VA. Pages are ranges of that mapping, tracked here
@@ -13,22 +14,13 @@
  * 4 KB (16 KB on Apple silicon), so reservations go in 64 KB units, the
  * Windows allocation granularity.
  */
-#define _GNU_SOURCE   /* MAP_ANONYMOUS */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <unistd.h>
-#include <sys/mman.h>
 #include "win32hle.h"
-
-#ifndef MAP_FIXED_NOREPLACE
-#define MAP_FIXED_NOREPLACE 0x100000
-#endif
-#ifndef MAP_NORESERVE
-#define MAP_NORESERVE 0
-#endif
+#include "hle_os.h"
 
 #define HDR   16u            /* [size][magic][class][-] before every heap block */
 #define MAGIC 0x48454150u    /* 'HEAP' */
@@ -104,14 +96,12 @@ void hle_vm_zero(uint32_t va, uint32_t size) { memset((void *)(uintptr_t)va, 0, 
 void hle_mem_init(void) {}
 
 uint32_t hle_vm_reserve(uint32_t va, uint32_t size) {
-    void *p = mmap(va ? (void *)(uintptr_t)(va & ~0xFFFFu) : NULL, size, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | (va ? MAP_FIXED_NOREPLACE : 0), -1, 0);
-    if (p == MAP_FAILED) { if (hle_on_alloc_fail && !va) hle_on_alloc_fail("pages", size); return 0; }
-    if (va && (uint32_t)(uintptr_t)p != (va & ~0xFFFFu)) { munmap(p, size); return 0; }
+    void *p = hle_os_map(va ? (void *)(uintptr_t)(va & ~0xFFFFu) : NULL, size);
+    if (!p) { if (hle_on_alloc_fail && !va) hle_on_alloc_fail("pages", size); return 0; }
     return (uint32_t)(uintptr_t)p;
 }
-void hle_vm_release(uint32_t va, uint32_t size) { munmap((void *)(uintptr_t)va, size); }
-void hle_vm_zero(uint32_t va, uint32_t size)    { madvise((void *)(uintptr_t)va, size, MADV_DONTNEED); }
+void hle_vm_release(uint32_t va, uint32_t size) { hle_os_unmap((void *)(uintptr_t)va, size); }
+void hle_vm_zero(uint32_t va, uint32_t size)    { hle_os_discard((void *)(uintptr_t)va, size); }
 #endif /* !__EMSCRIPTEN__ */
 
 void *hle_heap_alloc(uint32_t n, int zero) {
@@ -157,24 +147,18 @@ uint32_t hle_va_bad(const void *p) {
 }
 
 static void mem_init_once(void) {
-    g_host_page = (size_t)getpagesize();
+    g_host_page = hle_os_page_size();
     /* Nothing is accessible until reserved, page zero included: a guest NULL
      * (or a VA nobody handed out) faults, as it would on Windows. */
 #ifdef RECOMP_MEM_BASE
     /* The lift adds RECOMP_MEM_BASE as a constant (recomp_types.h): the block
-     * goes there or nowhere. Asked for, not forced, so nothing the host has
-     * mapped is replaced (Linux says so with NOREPLACE; macOS honours a free
-     * hint). */
+     * goes there or nowhere; it never replaces anything the host has mapped. */
     void *want = (void *)(uintptr_t)(RECOMP_MEM_BASE);
-    void *p = mmap(want, SPAN, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
-#ifdef __linux__
-                   | MAP_FIXED_NOREPLACE
-#endif
-                   , -1, 0);
+    void *p = hle_os_reserve(want, SPAN);
     if (p != want) hle_fatal("cannot reserve the guest's 4 GB at %p (RECOMP_MEM_BASE): the range is in use", want);
 #else
-    void *p = mmap(NULL, SPAN, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) hle_fatal("cannot reserve the guest's 4 GB");
+    void *p = hle_os_reserve(NULL, SPAN);
+    if (!p) hle_fatal("cannot reserve the guest's 4 GB");
 #endif
     g_mem_base = (ptrdiff_t)p;
 }
@@ -185,10 +169,10 @@ void hle_mem_init(void) {
 
 static uint8_t *host(uint32_t va) { return (uint8_t *)g_mem_base + va; }
 
-/* Fresh zero pages over [va, va+size), host-page aligned, with prot. */
-static int remap(uint32_t va, uint64_t size, int prot) {
-    void *p = mmap(host(va), (size_t)size, prot, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | (prot ? 0 : MAP_NORESERVE), -1, 0);
-    return p == (void *)host(va) ? 0 : -1;
+/* Fresh zero pages over [va, va+size), host-page aligned: read-write, or
+ * inaccessible. */
+static int remap(uint32_t va, uint64_t size, int writable) {
+    return writable ? hle_os_commit(host(va), (size_t)size) : hle_os_decommit(host(va), (size_t)size);
 }
 
 static int overlaps(uint64_t lo, uint64_t hi) {
@@ -233,7 +217,7 @@ static uint32_t vm_reserve_locked(uint32_t va, uint32_t size) {
     } else if (lo < GRAN || hi > SPAN || overlaps(lo, hi)) {
         return 0;                                         /* page zero stays unmapped */
     }
-    if (g_nrng >= MAX_RANGES || remap((uint32_t)lo, hi - lo, PROT_READ | PROT_WRITE)) return 0;
+    if (g_nrng >= MAX_RANGES || remap((uint32_t)lo, hi - lo, 1)) return 0;
     add_range(lo, hi);
     return (uint32_t)lo;
 }
@@ -251,7 +235,7 @@ uint32_t hle_vm_reserve(uint32_t va, uint32_t size) {
 static void vm_release_locked(uint32_t va) {
     for (int i = 0; i < g_nrng; i++) {
         if (g_rng[i].lo != va) continue;
-        remap((uint32_t)g_rng[i].lo, g_rng[i].hi - g_rng[i].lo, PROT_NONE);
+        remap((uint32_t)g_rng[i].lo, g_rng[i].hi - g_rng[i].lo, 0);
         memmove(&g_rng[i], &g_rng[i + 1], sizeof g_rng[0] * (size_t)(g_nrng - i - 1));
         g_nrng--;
         return;
@@ -271,7 +255,7 @@ void hle_vm_zero(uint32_t va, uint32_t size) {
     uint64_t plo = (lo + g_host_page - 1) & ~(uint64_t)(g_host_page - 1), phi = hi & ~(uint64_t)(g_host_page - 1);
     if (plo >= phi) { memset(host(va), 0, size); return; }
     memset(host((uint32_t)lo), 0, (size_t)(plo - lo));
-    remap((uint32_t)plo, phi - plo, PROT_READ | PROT_WRITE);
+    remap((uint32_t)plo, phi - plo, 1);
     memset(host((uint32_t)phi), 0, (size_t)(hi - phi));
 }
 

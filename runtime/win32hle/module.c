@@ -19,6 +19,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include "win32hle.h"
+#include "hle_os.h"
 #include "pe_loader.h"
 
 #define ERROR_MOD_NOT_FOUND       126u
@@ -284,7 +285,7 @@ static void k_LoadStringA(void) { RET((uint32_t)hle_load_string(A32(0), A32(1), 
 /* ---- the current directory, as the guest sees it ---- */
 static void k_GetCurrentDirectoryA(void) {               /* (size, buf) */
     char cwd[1024], g[1024];
-    if (!getcwd(cwd, sizeof cwd)) cwd[0] = 0;
+    if (!hle_os_getcwd(cwd, sizeof cwd)) cwd[0] = 0;
     hle_guest_path(cwd, g, sizeof g);
     uint32_t n = (uint32_t)strlen(g), size = A32(0);
     char *buf = ASTR(1);

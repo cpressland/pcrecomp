@@ -14,6 +14,7 @@
 #include <string.h>
 #include "win32hle.h"
 #include "host.h"
+#include "selftest_os.h"
 
 static int fails;
 static void ok(const char *what, int cond) { if (!cond) { printf("FAIL %s\n", what); fails++; } }
@@ -67,11 +68,12 @@ int main(void) {
     /* RIFF: "RIFF" n "WAVE" "fmt " 4 [1 2 3 4] "data" 2 [9 9] */
     static const uint8_t riff[] = { 'R','I','F','F', 26,0,0,0, 'W','A','V','E', 'f','m','t',' ', 4,0,0,0, 1,2,3,4,
                                     'd','a','t','a', 2,0,0,0, 9,9 };
-    FILE *f = fopen("/tmp/hle_selftest.wav", "wb");
+    char wav[600];
+    FILE *f = fopen(test_path(wav, sizeof wav, "hle_selftest.wav"), "wb");
     fwrite(riff, 1, sizeof riff, f);
     fclose(f);
-    hle_set_drive('Z', "/");
-    uint32_t h = call("mmioOpenA", 3, (uint32_t[]){ hle_scratch_copy("Z:\\tmp\\hle_selftest.wav", 25), 0, 0 });
+    hle_set_drive('Z', test_tmp());                       /* mount the scratch folder as Z: */
+    uint32_t h = call("mmioOpenA", 3, (uint32_t[]){ hle_scratch_copy("Z:\\hle_selftest.wav", 20), 0, 0 });
     ok("mmioOpenA", h != 0);
     uint32_t *form = (uint32_t *)hle_alloc(20), *ck = (uint32_t *)hle_alloc(20);
     form[2] = 0x45564157u;                               /* 'WAVE' */
